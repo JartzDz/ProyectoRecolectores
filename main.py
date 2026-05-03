@@ -4,92 +4,30 @@ import networkx as nx
 import numpy as np
 import geopandas as gpd
 import shapely.geometry as geom
-import os
 import sys
 from shapely.validation import explain_validity
-from pyproj import CRS, Transformer
+from pyproj import CRS
+from pathlib import Path
 
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+try:
+    from IPython.display import display
+except ImportError:
+    def display(obj):
+        """Fallback simple para ejecución local fuera de notebooks."""
+        try:
+            print(obj.to_string(index=False))
+        except Exception:
+            print(obj)
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
 
 print("1) Cargando grafo...")
 G = ox.load_graphml("grafo_cuenca.graphml")
 print("   -> OK grafo cargado.")
-
-def utm_epsg_from_lonlat(lon, lat):
-    zone = int(np.floor((lon + 180) / 6) + 1)
-    return 32700 + zone if lat < 0 else 32600 + zone
-
-def preparar_busqueda_nodo_cercano(G, lon_ref, lat_ref):
-    """
-    Prepara una búsqueda robusta del nodo más cercano sin depender de
-    scikit-learn cuando el grafo está en EPSG:4326.
-    """
-    crs_grafo = CRS.from_user_input(G.graph.get("crs", "EPSG:4326"))
-    node_ids = np.array(list(G.nodes()))
-    xs = np.array([float(G.nodes[n]["x"]) for n in node_ids], dtype=float)
-    ys = np.array([float(G.nodes[n]["y"]) for n in node_ids], dtype=float)
-
-    if crs_grafo.is_geographic:
-        utm_crs = CRS.from_epsg(utm_epsg_from_lonlat(lon_ref, lat_ref))
-        transformer = Transformer.from_crs(crs_grafo, utm_crs, always_xy=True)
-        xs, ys = transformer.transform(xs, ys)
-        point_transformer = transformer
-    else:
-        point_transformer = None
-
-    return {
-        "node_ids": node_ids,
-        "xs": xs,
-        "ys": ys,
-        "point_transformer": point_transformer,
-    }
-
-def nearest_node_robusto(busqueda, lon, lat):
-    if busqueda["point_transformer"] is not None:
-        lon, lat = busqueda["point_transformer"].transform(lon, lat)
-
-    dx = busqueda["xs"] - lon
-    dy = busqueda["ys"] - lat
-    idx_min = int(np.argmin(dx * dx + dy * dy))
-    return busqueda["node_ids"][idx_min]
-
-def nombres_arista(attrs):
-    name = attrs.get("name")
-    if isinstance(name, list):
-        return [str(x) for x in name if x is not None]
-    if name is None:
-        return []
-    return [str(name)]
-
-def crear_subgrafo_por_patron_nombre(G, patron):
-    patron = patron.lower()
-    H = nx.MultiDiGraph()
-    H.graph.update(G.graph)
-    for u, v, k, d in G.edges(keys=True, data=True):
-        nombres = nombres_arista(d)
-        if any(patron in n.lower() for n in nombres):
-            if not H.has_node(u):
-                H.add_node(u, **G.nodes[u])
-            if not H.has_node(v):
-                H.add_node(v, **G.nodes[v])
-            H.add_edge(u, v, key=k, **d)
-    return H
-
-def nodo_mas_cercano_en_conjunto(G, target_node, candidate_nodes):
-    tx, ty = G.nodes[target_node]["x"], G.nodes[target_node]["y"]
-    best = None
-    for n in candidate_nodes:
-        dx = float(G.nodes[n]["x"]) - float(tx)
-        dy = float(G.nodes[n]["y"]) - float(ty)
-        d2 = dx * dx + dy * dy
-        if best is None or d2 < best[0]:
-            best = (d2, int(n))
-    return None if best is None else best[1]
-
-busqueda_nodo_cercano = preparar_busqueda_nodo_cercano(G, -78.9814250, -2.8758464)
 
 # 0) Validar que exista 'length' (distancia en metros)
 u0, v0, d0 = next(iter(G.edges(data=True)))
@@ -131,35 +69,9 @@ if tiene_tipo:
 
 # 3) Si no detectó estación/relleno por etiqueta, usar nearest_nodes
 if id_estacion is None:
-    id_estacion = nearest_node_robusto(busqueda_nodo_cercano, loc_estacion[1], loc_estacion[0])
+    id_estacion = ox.distance.nearest_nodes(G, loc_estacion[1], loc_estacion[0])
 if id_relleno is None:
-    id_relleno = nearest_node_robusto(busqueda_nodo_cercano, loc_relleno[1],  loc_relleno[0])
-
-# Corredor operativo obligatorio hacia el relleno: Vía al Valle
-subgrafo_via_valle = crear_subgrafo_por_patron_nombre(G, "via al valle")
-if len(subgrafo_via_valle.nodes) > 0:
-    via_valle_nodes = list(subgrafo_via_valle.nodes)
-    nodo_valle_ciudad = nodo_mas_cercano_en_conjunto(G, id_estacion, via_valle_nodes)
-    nodo_valle_relleno = nodo_mas_cercano_en_conjunto(G, id_relleno, via_valle_nodes)
-    try:
-        path_valle_central = nx.shortest_path(
-            subgrafo_via_valle,
-            nodo_valle_ciudad,
-            nodo_valle_relleno,
-            weight="travel_time"
-        )
-    except Exception:
-        path_valle_central = nx.shortest_path(
-            G,
-            nodo_valle_ciudad,
-            nodo_valle_relleno,
-            weight="travel_time"
-        )
-else:
-    via_valle_nodes = []
-    nodo_valle_ciudad = None
-    nodo_valle_relleno = None
-    path_valle_central = []
+    id_relleno = ox.distance.nearest_nodes(G, loc_relleno[1],  loc_relleno[0])
 
 # 4) Fallback: si no hay clientes etiquetados, usar polígono + buffer (para acercarte a 307)
 if len(nodos_clientes) == 0:
@@ -201,6 +113,10 @@ if len(nodos_clientes) == 0:
     )
 
     # UTM (metros)
+    def utm_epsg_from_lonlat(lon, lat):
+        zone = int(np.floor((lon + 180) / 6) + 1)
+        return 32700 + zone if lat < 0 else 32600 + zone
+
     epsg_utm = utm_epsg_from_lonlat(loc_estacion[1], loc_estacion[0])
     utm_crs = CRS.from_epsg(epsg_utm)
 
@@ -232,7 +148,6 @@ if len(dict_demandas) > 0:
     print(f"   -> Demanda Total (si aplica): {sum(dict_demandas.values()):.2f} kg")
 else:
     print("   -> Demanda: se definirá en CELDA 2 (recomendado).")
-
 
 # CELDA 2 (ROBUSTA): POIs + demandas (sirve con o sin poligono_zona)
 import pandas as pd
@@ -292,7 +207,7 @@ if not pois.empty:
     pois["pt"] = pois.geometry.representative_point()
 
     for _, row in pois.iterrows():
-        nearest_node = nearest_node_robusto(busqueda_nodo_cercano, row["pt"].x, row["pt"].y)
+        nearest_node = ox.distance.nearest_nodes(G, row["pt"].x, row["pt"].y)
         if nearest_node not in pesos_nodos:
             continue
 
@@ -377,7 +292,6 @@ print(f"Promedio: {np.mean(list(dict_demandas.values())):.2f} kg")
 
 top_3 = sorted(dict_demandas.items(), key=lambda x: x[1], reverse=True)[:3]
 print(f"\nTop 3 Hotspots: {top_3}")
-
 # CELDA 3 (COINCIDE CON CELDA 6): Matriz OD DISTANCIAS (m) + helpers de TIEMPO por tramo
 import numpy as np
 import networkx as nx
@@ -515,7 +429,6 @@ print(f"\nRetorno final (Depósito->Estación, 40): {t_fin/60:.2f} min")
 
 # CELDA 4: Clarke & Wright usando DISTANCIAS por calles (metros) + tiempos compatibles con CELDA 6
 import numpy as np
-from sklearn.cluster import AgglomerativeClustering
 
 # (Debe coincidir con CELDA 3 / CELDA 6)
 V_ESTACION_A_PRIMERO = 40.0
@@ -533,135 +446,6 @@ def tiempo_segundos(dist_m, vel_kmh):
 def D(dist_matriz, idx, a, b):
     """Distancia mínima (m) entre a y b desde dist_m."""
     return dist_matriz[idx[a], idx[b]]
-
-def construir_gdf_clientes_utm(G, nodos_clientes, lon_ref, lat_ref):
-    epsg_utm = utm_epsg_from_lonlat(lon_ref, lat_ref)
-    utm_crs = CRS.from_epsg(epsg_utm)
-
-    gdf_clientes = gpd.GeoDataFrame(
-        {"node": [int(n) for n in nodos_clientes]},
-        geometry=[geom.Point(G.nodes[n]["x"], G.nodes[n]["y"]) for n in nodos_clientes],
-        crs="EPSG:4326"
-    )
-    return gdf_clientes.to_crs(utm_crs)
-
-def estimar_num_clusters(nodos_clientes, dict_demanda, max_capacidad):
-    total_demanda = sum(float(dict_demanda.get(n, 0.0)) for n in nodos_clientes)
-    if max_capacidad <= 0:
-        return 1
-    # Las zonas deben representar territorios operativos, no viajes unitarios.
-    # Permitimos que cada zona agrupe varias cargas de camión antes del balanceo final.
-    carga_objetivo_zona = max_capacidad * 1.9
-    n_clusters = int(np.ceil(total_demanda / carga_objetivo_zona))
-    return max(2, min(len(nodos_clientes), n_clusters))
-
-def construir_matriz_cluster_red_vial(nodos_clientes, dist_matriz, idx, deposito_id=None, dist_hasta_valle=None):
-    """
-    Matriz simétrica para clustering usando distancia real sobre la red vial.
-    Incluye una pequeña componente asociada al depósito para favorecer zonas operativas coherentes.
-    """
-    nodos = [int(n) for n in nodos_clientes]
-    n = len(nodos)
-    M = np.zeros((n, n), dtype=float)
-    vals_finitos = []
-
-    for i, ni in enumerate(nodos):
-        for j in range(i + 1, n):
-            nj = nodos[j]
-            dij = D(dist_matriz, idx, ni, nj)
-            dji = D(dist_matriz, idx, nj, ni)
-            candidatos = [d for d in (dij, dji) if np.isfinite(d)]
-            if not candidatos:
-                val = np.inf
-            else:
-                val = float(np.mean(candidatos))
-                if deposito_id is not None:
-                    di_dep = D(dist_matriz, idx, ni, deposito_id)
-                    dj_dep = D(dist_matriz, idx, nj, deposito_id)
-                    if np.isfinite(di_dep) and np.isfinite(dj_dep):
-                        val += 0.15 * abs(float(di_dep) - float(dj_dep))
-                if dist_hasta_valle is not None:
-                    di_valle = dist_hasta_valle.get(int(ni), np.inf)
-                    dj_valle = dist_hasta_valle.get(int(nj), np.inf)
-                    if np.isfinite(di_valle) and np.isfinite(dj_valle):
-                        val += 0.35 * abs(float(di_valle) - float(dj_valle))
-            M[i, j] = M[j, i] = val
-            if np.isfinite(val):
-                vals_finitos.append(val)
-
-    if vals_finitos:
-        reemplazo = float(np.percentile(vals_finitos, 95) * 3.0)
-    else:
-        reemplazo = 1e6
-
-    M[~np.isfinite(M)] = reemplazo
-    np.fill_diagonal(M, 0.0)
-    return nodos, M
-
-def clusterizar_clientes_red_vial(G, nodos_clientes, dict_demanda, max_capacidad, lon_ref, lat_ref,
-                                  dist_matriz=None, idx=None, deposito_id=None, dist_hasta_valle=None):
-    if len(nodos_clientes) <= 1:
-        return {int(nodos_clientes[0]): 0} if nodos_clientes else {}
-
-    if dist_matriz is None or idx is None:
-        raise ValueError("Se requiere dist_matriz e idx para clusterizar por red vial.")
-
-    n_clusters = estimar_num_clusters(nodos_clientes, dict_demanda, max_capacidad)
-    nodos_ordenados, M = construir_matriz_cluster_red_vial(
-        nodos_clientes=nodos_clientes,
-        dist_matriz=dist_matriz,
-        idx=idx,
-        deposito_id=deposito_id,
-        dist_hasta_valle=dist_hasta_valle
-    )
-
-    model = AgglomerativeClustering(
-        n_clusters=n_clusters,
-        metric="precomputed",
-        linkage="average"
-    )
-    labels = model.fit_predict(M)
-    return {int(node): int(label) for node, label in zip(nodos_ordenados, labels)}
-
-def estimar_umbral_salto_cluster(nodos_cluster, dist_matriz, idx, factor=8.0):
-    if len(nodos_cluster) <= 2:
-        return np.inf
-
-    nearest = []
-    for i in nodos_cluster:
-        vecinos = [
-            D(dist_matriz, idx, i, j)
-            for j in nodos_cluster
-            if i != j and np.isfinite(D(dist_matriz, idx, i, j))
-        ]
-        if vecinos:
-            nearest.append(min(vecinos))
-
-    if not nearest:
-        return np.inf
-
-    return float(np.median(nearest) * factor)
-
-def validar_asignacion_unica(lista_viajes, nodos_esperados):
-    esperados = {int(n) for n in nodos_esperados}
-    vistos = []
-
-    for viaje in lista_viajes:
-        ruta = viaje.get("camino", [])
-        if len(ruta) != len(set(int(n) for n in ruta)):
-            raise ValueError(f"Ruta con nodos repetidos detectada: {ruta}")
-        vistos.extend(int(n) for n in ruta)
-
-    vistos_set = set(vistos)
-    repetidos = sorted(n for n in vistos_set if vistos.count(n) > 1)
-    faltantes = sorted(esperados - vistos_set)
-    extras = sorted(vistos_set - esperados)
-
-    if repetidos or faltantes or extras:
-        raise ValueError(
-            f"Asignación inválida. Repetidos={repetidos[:10]}, "
-            f"faltantes={faltantes[:10]}, extras={extras[:10]}"
-        )
 
 # =========================================================
 # 1) AHORROS Clarke & Wright (distancia)
@@ -692,59 +476,10 @@ def calcular_ahorros_dist(nodos, dist_matriz, idx, deposito_id):
     ahorros.sort(key=lambda x: x['saving'], reverse=True)
     return ahorros
 
-def costo_ruta_clientes_dist(camino, dist_matriz, idx, deposito_id):
-    if not camino:
-        return np.inf
-    total = D(dist_matriz, idx, deposito_id, camino[0])
-    for a, b in zip(camino[:-1], camino[1:]):
-        total += D(dist_matriz, idx, a, b)
-    total += D(dist_matriz, idx, camino[-1], deposito_id)
-    return float(total)
-
-def mejorar_ruta_2opt(camino, dist_matriz, idx, deposito_id, max_iter=60):
-    """
-    Mejora local simple sobre el orden de clientes.
-    Reduce cruces y secuencias poco compactas sin cambiar capacidad.
-    """
-    if not camino or len(camino) < 4:
-        return list(camino)
-
-    mejor = list(camino)
-    mejor_costo = costo_ruta_clientes_dist(mejor, dist_matriz, idx, deposito_id)
-    mejorado = True
-    iter_count = 0
-
-    while mejorado and iter_count < max_iter:
-        mejorado = False
-        iter_count += 1
-        for i in range(1, len(mejor) - 2):
-            for j in range(i + 1, len(mejor)):
-                candidato = mejor[:i] + list(reversed(mejor[i:j])) + mejor[j:]
-                costo = costo_ruta_clientes_dist(candidato, dist_matriz, idx, deposito_id)
-                if costo + 1e-9 < mejor_costo:
-                    mejor = candidato
-                    mejor_costo = costo
-                    mejorado = True
-                    break
-            if mejorado:
-                break
-    return mejor
-
-def dist_descarga_operativa_m(G, nodo_origen, nodo_relleno):
-    try:
-        path = shortest_path_obligando_via_valle(
-            G, nodo_origen, nodo_relleno, prev_node=None, weight="travel_time",
-            edge_usage=None, reuse_penalty_factor=0.0
-        )
-        return path_dist_m(G, path)
-    except Exception:
-        return np.nan
-
 # =========================================================
 # 2) EJECUTAR Clarke & Wright (distancia) con restricción de CAPACIDAD
 # =========================================================
-def ejecutar_clarke_wright_dist(nodos_clientes, dict_demanda, dist_matriz, idx, deposito_id, max_capacidad,
-                                max_link_distance_m=np.inf, cluster_id=None):
+def ejecutar_clarke_wright_dist(nodos_clientes, dict_demanda, dist_matriz, idx, deposito_id, max_capacidad):
     """
     Devuelve rutas como:
       [{'camino':[c1,c2,...], 'carga':...}, ...]
@@ -773,73 +508,13 @@ def ejecutar_clarke_wright_dist(nodos_clientes, dict_demanda, dist_matriz, idx, 
                 ruta_j_id = r_id
 
         if ruta_i_id and ruta_j_id and (ruta_i_id != ruta_j_id):
-            d_union = D(dist_matriz, idx, i, j)
-            if np.isfinite(max_link_distance_m) and d_union > max_link_distance_m:
-                continue
-
             carga_total = rutas[ruta_i_id]['carga'] + rutas[ruta_j_id]['carga']
             if carga_total <= max_capacidad:
                 rutas[ruta_i_id]['camino'] = rutas[ruta_i_id]['camino'] + rutas[ruta_j_id]['camino']
                 rutas[ruta_i_id]['carga']  = carga_total
                 del rutas[ruta_j_id]
 
-    rutas_finales = list(rutas.values())
-    for ruta in rutas_finales:
-        ruta["camino"] = mejorar_ruta_2opt(ruta["camino"], dist_matriz, idx, deposito_id)
-    if cluster_id is not None:
-        for ruta in rutas_finales:
-            ruta["cluster_id"] = int(cluster_id)
-    return rutas_finales
-
-def ejecutar_clarke_wright_por_clusters(G, nodos_clientes, dict_demanda, dist_matriz, idx, deposito_id,
-                                        max_capacidad, lon_ref, lat_ref):
-    if nodo_valle_ciudad is not None:
-        G_rev = G.reverse(copy=False)
-        dist_hasta_valle = nx.single_source_dijkstra_path_length(G_rev, nodo_valle_ciudad, weight="length")
-    else:
-        dist_hasta_valle = None
-
-    mapa_clusters = clusterizar_clientes_red_vial(
-        G=G,
-        nodos_clientes=nodos_clientes,
-        dict_demanda=dict_demanda,
-        max_capacidad=max_capacidad,
-        lon_ref=lon_ref,
-        lat_ref=lat_ref,
-        dist_matriz=dist_matriz,
-        idx=idx,
-        deposito_id=deposito_id,
-        dist_hasta_valle=dist_hasta_valle
-    )
-
-    clusters = {}
-    for nodo in nodos_clientes:
-        cluster_id = mapa_clusters[int(nodo)]
-        clusters.setdefault(cluster_id, []).append(nodo)
-
-    lista_viajes = []
-    print(f"Zonas detectadas para ruteo por red vial: {len(clusters)}")
-
-    for cluster_id, nodos_cluster in sorted(clusters.items()):
-        umbral_salto = estimar_umbral_salto_cluster(nodos_cluster, dist_matriz, idx)
-        print(
-            f"  -> Cluster {cluster_id}: {len(nodos_cluster)} nodos | "
-            f"umbral salto {umbral_salto/1000.0:.2f} km"
-        )
-        viajes_cluster = ejecutar_clarke_wright_dist(
-            nodos_clientes=nodos_cluster,
-            dict_demanda=dict_demanda,
-            dist_matriz=dist_matriz,
-            idx=idx,
-            deposito_id=deposito_id,
-            max_capacidad=max_capacidad,
-            max_link_distance_m=umbral_salto,
-            cluster_id=cluster_id
-        )
-        lista_viajes.extend(viajes_cluster)
-
-    validar_asignacion_unica(lista_viajes, nodos_clientes)
-    return lista_viajes, mapa_clusters
+    return list(rutas.values())
 
 # =========================================================
 # 3) TIEMPOS (COMPATIBLES CON CELDA 6)
@@ -872,10 +547,7 @@ def tiempo_viaje_desde_dist_s(ruta_clientes, dist_matriz, idx, estacion_id, depo
             total += TIEMPO_RECOLECCION_POR_NODO
 
     # 3) Descarga (30)
-    dist_descarga = dist_descarga_operativa_m(G, ruta_clientes[-1], deposito_id)
-    if not np.isfinite(dist_descarga):
-        dist_descarga = D(dist_matriz, idx, ruta_clientes[-1], deposito_id)
-    total += tiempo_segundos(dist_descarga, V_ULTIMO_A_DEPOSITO)
+    total += tiempo_segundos(D(dist_matriz, idx, ruta_clientes[-1], deposito_id), V_ULTIMO_A_DEPOSITO)
 
     return total
 
@@ -885,140 +557,476 @@ def tiempo_fin_turno_s(dist_matriz, idx, deposito_id, estacion_id):
 
 print("Funciones C&W (distancia) compiladas y tiempos alineados con CELDA 6 ✅")
 
-# CELDA 5: Generación de Rutas Optimizadas (Viajes) + métricas compatibles con CELDA 6
+# CELDA 4: Clarke & Wright usando DISTANCIAS por calles (metros) + tiempos compatibles con CELDA 6
+import numpy as np
 
-CAPACIDAD_MAXIMA_KG = 9000.0
+# (Debe coincidir con CELDA 3 / CELDA 6)
+V_ESTACION_A_PRIMERO = 40.0
+V_RECOLECCION        = 10.0
+V_ULTIMO_A_DEPOSITO  = 30.0
+V_DEPOSITO_A_EST     = 40.0
+TIEMPO_RECOLECCION_POR_NODO = 60  # s
 
-print("Optimizando rutas de recolección (Clarke & Wright con DISTANCIAS)...")
+def tiempo_segundos(dist_m, vel_kmh):
+    if dist_m is None or not np.isfinite(dist_m):
+        return np.inf
+    vel_mps = vel_kmh * 1000.0 / 3600.0
+    return dist_m / vel_mps if vel_mps > 0 else np.inf
 
-# 1) Ejecutar Clarke & Wright por clusters espaciales
-lista_viajes, mapa_clusteres = ejecutar_clarke_wright_por_clusters(
-    G=G,
+def D(dist_matriz, idx, a, b):
+    """Distancia mínima (m) entre a y b desde dist_m."""
+    return dist_matriz[idx[a], idx[b]]
+
+# =========================================================
+# 1) AHORROS Clarke & Wright (distancia)
+# =========================================================
+def calcular_ahorros_dist(nodos, dist_matriz, idx, deposito_id):
+    """
+    Savings clásico:
+      s(i,j) = d(i,dep) + d(dep,j) - d(i,j)
+    usando DISTANCIAS por calles (m).
+    """
+    ahorros = []
+    for i in nodos:
+        for j in nodos:
+            if i == j:
+                continue
+
+            d_i_dep = D(dist_matriz, idx, i, deposito_id)
+            d_dep_j = D(dist_matriz, idx, deposito_id, j)
+            d_i_j   = D(dist_matriz, idx, i, j)
+
+            if not (np.isfinite(d_i_dep) and np.isfinite(d_dep_j) and np.isfinite(d_i_j)):
+                continue
+
+            saving = (d_i_dep + d_dep_j) - d_i_j
+            if saving > 0:
+                ahorros.append({'i': i, 'j': j, 'saving': saving})
+
+    ahorros.sort(key=lambda x: x['saving'], reverse=True)
+    return ahorros
+
+# =========================================================
+# 2) EJECUTAR Clarke & Wright (distancia) con restricción de CAPACIDAD
+# =========================================================
+def ejecutar_clarke_wright_dist(nodos_clientes, dict_demanda, dist_matriz, idx, deposito_id, max_capacidad):
+    """
+    Devuelve rutas como:
+      [{'camino':[c1,c2,...], 'carga':...}, ...]
+    """
+    rutas = {}
+    for nodo in nodos_clientes:
+        rutas[nodo] = {
+            'camino': [nodo],
+            'carga': float(dict_demanda.get(nodo, 0.0)),
+        }
+
+    lista_ahorros = calcular_ahorros_dist(nodos_clientes, dist_matriz, idx, deposito_id)
+    print(f"Posibles uniones calculadas: {len(lista_ahorros)}")
+
+    for s in lista_ahorros:
+        i, j = s['i'], s['j']
+
+        ruta_i_id = None
+        ruta_j_id = None
+
+        # i debe ser FINAL de su ruta, j debe ser INICIO de su ruta (C&W clásico)
+        for r_id, datos in rutas.items():
+            if datos['camino'][-1] == i:
+                ruta_i_id = r_id
+            if datos['camino'][0] == j:
+                ruta_j_id = r_id
+
+        if ruta_i_id and ruta_j_id and (ruta_i_id != ruta_j_id):
+            carga_total = rutas[ruta_i_id]['carga'] + rutas[ruta_j_id]['carga']
+            if carga_total <= max_capacidad:
+                rutas[ruta_i_id]['camino'] = rutas[ruta_i_id]['camino'] + rutas[ruta_j_id]['camino']
+                rutas[ruta_i_id]['carga']  = carga_total
+                del rutas[ruta_j_id]
+
+    return list(rutas.values())
+
+# =========================================================
+# 3) TIEMPOS (COMPATIBLES CON CELDA 6)
+# =========================================================
+def tiempo_viaje_desde_dist_s(ruta_clientes, dist_matriz, idx, estacion_id, deposito_id,
+                             origen_es_estacion=True,
+                             incluir_recoleccion=True):
+    """
+    Tiempo de UN VIAJE (sin retorno final a estación), igual que CELDA 6:
+      - Origen (estación si primer viaje, depósito si no) -> primer cliente: 40
+      - Entre clientes: 10 + 60s por parada (opcional)
+      - Último cliente -> depósito: 30
+    """
+    if not ruta_clientes:
+        return np.inf
+
+    total = 0.0
+
+    # 1) Aproximación (40)
+    origen = estacion_id if origen_es_estacion else deposito_id
+    total += tiempo_segundos(D(dist_matriz, idx, origen, ruta_clientes[0]), V_ESTACION_A_PRIMERO)
+
+    # 2) Interno (10) + recolección
+    if incluir_recoleccion:
+        total += TIEMPO_RECOLECCION_POR_NODO  # primera parada
+
+    for a, b in zip(ruta_clientes[:-1], ruta_clientes[1:]):
+        total += tiempo_segundos(D(dist_matriz, idx, a, b), V_RECOLECCION)
+        if incluir_recoleccion:
+            total += TIEMPO_RECOLECCION_POR_NODO
+
+    # 3) Descarga (30)
+    total += tiempo_segundos(D(dist_matriz, idx, ruta_clientes[-1], deposito_id), V_ULTIMO_A_DEPOSITO)
+
+    return total
+
+def tiempo_fin_turno_s(dist_matriz, idx, deposito_id, estacion_id):
+    """Retorno final depósito -> estación (40)."""
+    return tiempo_segundos(D(dist_matriz, idx, deposito_id, estacion_id), V_DEPOSITO_A_EST)
+
+print("Funciones C&W (distancia) compiladas y tiempos alineados con CELDA 6 ✅")
+
+# ---------------------------------------------------------
+# 4) Materializar lista_viajes para ejecución local
+# ---------------------------------------------------------
+PARAMETROS_OPERATIVOS = {
+    "num_vehiculos": 15,
+    "capacidad_max_kg": 11000.0,
+    "capacidad_min_kg": 9000.0,
+    "velocidad_recoleccion_kmh": 12.5,
+    "velocidad_transito_kmh": 50.0,
+    "personas_por_camion": 5,
+    "choferes": 1,
+    "obreros": 4,
+    "obreros_min": 3,
+    "horario_inicio": "06:00",
+    "horario_fin": "24:00",
+    "almuerzo_inicio": "13:00",
+    "almuerzo_fin": "14:00",
+    "horario_turno_manana": ("06:30", "13:00"),
+    "horario_turno_tarde": ("13:00", "17:00"),
+    "horario_desalojo_vespertino": "19:00",
+    "ventana_desalojo_tarde": ("13:00", "17:00"),
+    "ventana_desalojo_vespertino": ("19:00", "20:00"),
+    "receso_nocturno_inicio": "20:00",
+    "receso_nocturno_fin": "21:00",
+    "sectores_urbanos_total": 10,
+    "sectores_manana": 5,
+    "sectores_noche": 5,
+    "zonas_criticas": ["Rafael Maria Arizaga", "Heroes de Verdeloma", "Juan Montalvo", "Huayna Capac"],
+    "horas_pico": [("15:00", "19:00"), ("20:00", "24:00")],
+    "dia_critico": "viernes",
+    "costo_min_usd": 90.0,
+    "costo_promedio_min_usd": 150.0,
+    "costo_promedio_max_usd": 190.0,
+    "costo_max_usd": 220.0,
+    "distancia_camion_dia_km": 70.0,
+    "frecuencia_recorridos_dia": 2,
+    "dias_operacion_anual": 365,
+}
+
+NUM_VEHICULOS = PARAMETROS_OPERATIVOS["num_vehiculos"]
+CAPACIDAD_MAXIMA_KG = float(globals().get("CAPACIDAD_MAXIMA_KG", PARAMETROS_OPERATIVOS["capacidad_max_kg"]))
+CAPACIDAD_MINIMA_KG = PARAMETROS_OPERATIVOS["capacidad_min_kg"]
+V_ESTACION_A_PRIMERO = PARAMETROS_OPERATIVOS["velocidad_transito_kmh"]
+V_RECOLECCION = PARAMETROS_OPERATIVOS["velocidad_recoleccion_kmh"]
+V_ULTIMO_A_DEPOSITO = PARAMETROS_OPERATIVOS["velocidad_transito_kmh"]
+V_DEPOSITO_A_EST = PARAMETROS_OPERATIVOS["velocidad_transito_kmh"]
+PESO_AHORRO_DIST = 0.60
+PESO_AHORRO_TIEMPO = 0.40
+
+def distancia_ruta_interna_m(camino, dist_matriz, idx):
+    total = 0.0
+    for a, b in zip(camino[:-1], camino[1:]):
+        d = D(dist_matriz, idx, a, b)
+        if not np.isfinite(d):
+            return np.inf
+        total += float(d)
+    return total
+
+def distancia_viaje_total_m(camino, dist_matriz, idx, estacion_id, deposito_id, origen_es_estacion=True):
+    if not camino:
+        return np.inf
+    origen = estacion_id if origen_es_estacion else deposito_id
+    total = D(dist_matriz, idx, origen, camino[0])
+    total += distancia_ruta_interna_m(camino, dist_matriz, idx)
+    total += D(dist_matriz, idx, camino[-1], deposito_id)
+    return float(total) if np.isfinite(total) else np.inf
+
+def metricas_rutas(rutas, dist_matriz, idx, estacion_id, deposito_id):
+    dist_total = 0.0
+    tiempo_total = 0.0
+    carga_total = 0.0
+    paradas = 0
+    validas = 0
+    for r in rutas:
+        camino = list(r.get("camino", []))
+        if not camino:
+            continue
+        d = distancia_viaje_total_m(camino, dist_matriz, idx, estacion_id, deposito_id, True)
+        t = tiempo_viaje_desde_dist_s(camino, dist_matriz, idx, estacion_id, deposito_id, True, True)
+        if np.isfinite(d) and np.isfinite(t):
+            dist_total += d
+            tiempo_total += t
+            validas += 1
+        carga_total += float(r.get("carga", 0.0))
+        paradas += len(camino)
+    return {
+        "rutas": len(rutas),
+        "rutas_validas": validas,
+        "paradas": paradas,
+        "carga_kg": carga_total,
+        "distancia_km": dist_total / 1000.0,
+        "tiempo_h": tiempo_total / 3600.0,
+        "kg_por_km": carga_total / (dist_total / 1000.0) if dist_total > 0 else np.nan,
+    }
+
+def kmeans_zonas(nodos, k, max_iter=60, seed=7):
+    if not nodos:
+        return {}
+    k = max(1, min(int(k), len(nodos)))
+    coords = np.array([[G.nodes[n]["x"], G.nodes[n]["y"]] for n in nodos], dtype=float)
+    scale = coords.std(axis=0)
+    scale[scale == 0] = 1.0
+    X = (coords - coords.mean(axis=0)) / scale
+    rng = np.random.default_rng(seed)
+    centroides = X[rng.choice(len(X), size=k, replace=False)]
+    labels = np.zeros(len(X), dtype=int)
+    for _ in range(max_iter):
+        distancias = ((X[:, None, :] - centroides[None, :, :]) ** 2).sum(axis=2)
+        nuevos = distancias.argmin(axis=1)
+        if np.array_equal(labels, nuevos):
+            break
+        labels = nuevos
+        for c in range(k):
+            mask = labels == c
+            if mask.any():
+                centroides[c] = X[mask].mean(axis=0)
+    zonas = {}
+    for nodo, zona in zip(nodos, labels):
+        zonas.setdefault(int(zona) + 1, []).append(nodo)
+    return zonas
+
+def calcular_ahorros_hibridos(nodos, dist_matriz, idx, deposito_id):
+    candidatos = []
+    for i in nodos:
+        for j in nodos:
+            if i == j:
+                continue
+            d_i_dep = D(dist_matriz, idx, i, deposito_id)
+            d_dep_j = D(dist_matriz, idx, deposito_id, j)
+            d_i_j = D(dist_matriz, idx, i, j)
+            if not (np.isfinite(d_i_dep) and np.isfinite(d_dep_j) and np.isfinite(d_i_j)):
+                continue
+            ahorro_dist = (d_i_dep + d_dep_j) - d_i_j
+            ahorro_tiempo = (
+                tiempo_segundos(d_i_dep, V_ULTIMO_A_DEPOSITO)
+                + tiempo_segundos(d_dep_j, V_ESTACION_A_PRIMERO)
+                - tiempo_segundos(d_i_j, V_RECOLECCION)
+            )
+            if ahorro_dist > 0 or ahorro_tiempo > 0:
+                candidatos.append({"i": i, "j": j, "ahorro_dist_m": float(ahorro_dist), "ahorro_tiempo_s": float(ahorro_tiempo)})
+    max_d = max([abs(c["ahorro_dist_m"]) for c in candidatos] + [1.0])
+    max_t = max([abs(c["ahorro_tiempo_s"]) for c in candidatos] + [1.0])
+    for c in candidatos:
+        c["saving"] = PESO_AHORRO_DIST * (c["ahorro_dist_m"] / max_d) + PESO_AHORRO_TIEMPO * (c["ahorro_tiempo_s"] / max_t)
+    candidatos.sort(key=lambda x: x["saving"], reverse=True)
+    return candidatos
+
+def ejecutar_clarke_wright_hibrido(nodos_zona, dict_demanda, dist_matriz, idx, deposito_id, max_capacidad):
+    rutas = {nodo: {"camino": [nodo], "carga": float(dict_demanda.get(nodo, 0.0))} for nodo in nodos_zona}
+    lista_ahorros = calcular_ahorros_hibridos(nodos_zona, dist_matriz, idx, deposito_id)
+    for s in lista_ahorros:
+        i, j = s["i"], s["j"]
+        ruta_i_id = None
+        ruta_j_id = None
+        for r_id, datos in rutas.items():
+            if datos["camino"][-1] == i:
+                ruta_i_id = r_id
+            if datos["camino"][0] == j:
+                ruta_j_id = r_id
+        if ruta_i_id is not None and ruta_j_id is not None and ruta_i_id != ruta_j_id:
+            carga_total = rutas[ruta_i_id]["carga"] + rutas[ruta_j_id]["carga"]
+            if carga_total <= max_capacidad:
+                rutas[ruta_i_id]["camino"] = rutas[ruta_i_id]["camino"] + rutas[ruta_j_id]["camino"]
+                rutas[ruta_i_id]["carga"] = carga_total
+                del rutas[ruta_j_id]
+    return list(rutas.values())
+
+def two_opt_ruta(camino, dist_matriz, idx, max_iter=100):
+    if len(camino) < 4:
+        return camino, 0.0
+    mejor = list(camino)
+    mejor_dist = distancia_ruta_interna_m(mejor, dist_matriz, idx)
+    mejora_total = 0.0
+    mejoro = True
+    iteraciones = 0
+    while mejoro and iteraciones < max_iter:
+        mejoro = False
+        iteraciones += 1
+        for i in range(0, len(mejor) - 2):
+            for j in range(i + 2, len(mejor)):
+                candidato = mejor[:i + 1] + list(reversed(mejor[i + 1:j + 1])) + mejor[j + 1:]
+                d_candidato = distancia_ruta_interna_m(candidato, dist_matriz, idx)
+                if d_candidato + 1e-6 < mejor_dist:
+                    mejora_total += mejor_dist - d_candidato
+                    mejor = candidato
+                    mejor_dist = d_candidato
+                    mejoro = True
+                    break
+            if mejoro:
+                break
+    return mejor, mejora_total
+
+def aplicar_two_opt(rutas, dist_matriz, idx):
+    rutas_opt = []
+    mejora_total = 0.0
+    for r in rutas:
+        nueva = dict(r)
+        camino_opt, mejora = two_opt_ruta(list(r.get("camino", [])), dist_matriz, idx)
+        nueva["camino"] = camino_opt
+        nueva["mejora_2opt_m"] = float(mejora)
+        mejora_total += float(mejora)
+        rutas_opt.append(nueva)
+    return rutas_opt, mejora_total
+
+def ejecutar_algoritmo_hibrido(nodos_clientes, dict_demanda, dist_matriz, idx, estacion_id, deposito_id):
+    demanda_total = sum(float(dict_demanda.get(n, 0.0)) for n in nodos_clientes)
+    zonas_objetivo = int(np.ceil(demanda_total / CAPACIDAD_MAXIMA_KG)) if CAPACIDAD_MAXIMA_KG > 0 else 1
+    zonas_objetivo = max(1, min(PARAMETROS_OPERATIVOS["sectores_urbanos_total"], zonas_objetivo))
+    zonas = kmeans_zonas(nodos_clientes, zonas_objetivo)
+    rutas = []
+    for zona_id, nodos_zona in sorted(zonas.items()):
+        rutas_zona = ejecutar_clarke_wright_hibrido(nodos_zona, dict_demanda, dist_matriz, idx, deposito_id, CAPACIDAD_MAXIMA_KG)
+        for r in rutas_zona:
+            r["zona"] = zona_id
+        rutas.extend(rutas_zona)
+    rutas, mejora_2opt_m = aplicar_two_opt(rutas, dist_matriz, idx)
+    return rutas, zonas, mejora_2opt_m
+
+rutas_base_bryan = ejecutar_clarke_wright_dist(
     nodos_clientes=nodos_clientes,
     dict_demanda=dict_demandas,
     dist_matriz=dist_m,
     idx=idx,
-    deposito_id=id_relleno,
+    deposito_id=deposito,
     max_capacidad=CAPACIDAD_MAXIMA_KG,
-    lon_ref=loc_estacion[1],
-    lat_ref=loc_estacion[0]
 )
 
-print(f"\n✅ RESULTADO: Se han generado {len(lista_viajes)} viajes (rutas de clientes) para recoger toda la basura.\n")
+rutas_clarke_wright, zonas_hibridas, mejora_2opt_m = ejecutar_algoritmo_hibrido(
+    nodos_clientes=nodos_clientes,
+    dict_demanda=dict_demandas,
+    dist_matriz=dist_m,
+    idx=idx,
+    estacion_id=estacion,
+    deposito_id=deposito,
+)
 
-# Helpers de distancia por matriz
-def dist_ab_m(a, b):
-    return dist_m[idx[a], idx[b]]
+metricas_base = metricas_rutas(rutas_base_bryan, dist_m, idx, estacion, deposito)
+metricas_hibrido = metricas_rutas(rutas_clarke_wright, dist_m, idx, estacion, deposito)
+df_comparacion_algoritmos = pd.DataFrame([
+    {"algoritmo": "Base Bryan - Clarke & Wright distancia", **metricas_base},
+    {"algoritmo": "Hibrido - Zonas + ahorro distancia-tiempo + 2-opt", **metricas_hibrido},
+])
+df_comparacion_algoritmos["mejora_distancia_pct_vs_base"] = np.nan
+df_comparacion_algoritmos["mejora_tiempo_pct_vs_base"] = np.nan
+if metricas_base["distancia_km"] > 0:
+    df_comparacion_algoritmos.loc[1, "mejora_distancia_pct_vs_base"] = 100 * (
+        metricas_base["distancia_km"] - metricas_hibrido["distancia_km"]
+    ) / metricas_base["distancia_km"]
+if metricas_base["tiempo_h"] > 0:
+    df_comparacion_algoritmos.loc[1, "mejora_tiempo_pct_vs_base"] = 100 * (
+        metricas_base["tiempo_h"] - metricas_hibrido["tiempo_h"]
+    ) / metricas_base["tiempo_h"]
+df_comparacion_algoritmos.to_csv("comparacion_algoritmos.csv", index=False, encoding="utf-8-sig")
 
-# 2) Enriquecer cada viaje con:
-#    - distancias por tramos (Aprox, Recol, Desc)
-#    - tiempos por tramos (desde Estación y desde Relleno)
-#    - (NO incluye retorno final Relleno->Estación, eso es CELDA 6)
-for k, viaje in enumerate(lista_viajes, 1):
-    ruta = viaje["camino"]
-    if not ruta:
-        viaje["valido"] = False
+print("\n======================")
+print("COMPARACION BASE VS HIBRIDO")
+print("======================")
+print(f"Zonas generadas: {len(zonas_hibridas)}")
+print(f"Mejora interna por 2-opt: {mejora_2opt_m/1000:.2f} km")
+display(df_comparacion_algoritmos.round(2))
+
+lista_viajes = []
+for ruta_info in rutas_clarke_wright:
+    camino = list(ruta_info.get("camino", []))
+    carga = float(ruta_info.get("carga", 0.0))
+
+    if not camino:
+        lista_viajes.append({
+            "camino": [],
+            "carga": carga,
+            "valido": False,
+            "motivo": "Ruta vacia",
+            "tiempo_s": {
+                "si_sale_estacion": np.inf,
+                "si_sale_relleno": np.inf,
+            },
+            "dist_tramos_m": {
+                "aprox_desde_estacion": np.inf,
+                "aprox_desde_relleno": np.inf,
+                "recoleccion": 0.0,
+                "descarga": np.inf,
+            }
+        })
         continue
 
-    primer = ruta[0]
-    ultimo = ruta[-1]
+    d_aprox_est = D(dist_m, idx, estacion, camino[0])
+    d_aprox_rel = D(dist_m, idx, deposito, camino[0])
+    d_descarga = D(dist_m, idx, camino[-1], deposito)
 
-    # -------------------------
-    # Distancias (m) por tramos
-    # -------------------------
-    # Aproximación desde estación y desde relleno (porque CELDA 6 decide)
-    d_aprox_est_m = dist_ab_m(id_estacion, primer)
-    d_aprox_rel_m = dist_ab_m(id_relleno,  primer)
-
-    # Recolección (solo entre clientes consecutivos)
-    d_recol_m = 0.0
-    ok_recol = True
-    for a, b in zip(ruta[:-1], ruta[1:]):
-        dab = dist_ab_m(a, b)
-        if not np.isfinite(dab):
-            ok_recol = False
+    d_recoleccion = 0.0
+    valido = True
+    for a, b in zip(camino[:-1], camino[1:]):
+        d_seg = D(dist_m, idx, a, b)
+        if not np.isfinite(d_seg):
+            valido = False
+            d_recoleccion = np.inf
             break
-        d_recol_m += dab
-    if not ok_recol:
-        d_recol_m = np.inf
+        d_recoleccion += float(d_seg)
 
-    # Descarga (último -> relleno)
-    d_desc_m = dist_ab_m(ultimo, id_relleno)
-
-    # Total viaje (sin fin de turno)
-    d_total_est_m = d_aprox_est_m + d_recol_m + d_desc_m
-    d_total_rel_m = d_aprox_rel_m + d_recol_m + d_desc_m
-
-    # -------------------------
-    # Tiempos (s) por viaje (compatibles con CELDA 6)
-    # -------------------------
-    # OJO: esta función YA incluye TIEMPO_RECOLECCION_POR_NODO (60s/parada)
-    t_desde_est_s = tiempo_viaje_desde_dist_s(
-        ruta_clientes=ruta,
-        dist_matriz=dist_m,
-        idx=idx,
-        estacion_id=id_estacion,
-        deposito_id=id_relleno,
-        origen_es_estacion=True,
-        incluir_recoleccion=True
+    t_est = tiempo_viaje_desde_dist_s(
+        camino, dist_m, idx, estacion, deposito, origen_es_estacion=True, incluir_recoleccion=True
+    )
+    t_rel = tiempo_viaje_desde_dist_s(
+        camino, dist_m, idx, estacion, deposito, origen_es_estacion=False, incluir_recoleccion=True
     )
 
-    t_desde_rel_s = tiempo_viaje_desde_dist_s(
-        ruta_clientes=ruta,
-        dist_matriz=dist_m,
-        idx=idx,
-        estacion_id=id_estacion,
-        deposito_id=id_relleno,
-        origen_es_estacion=False,
-        incluir_recoleccion=True
-    )
+    if not (np.isfinite(d_aprox_est) and np.isfinite(d_aprox_rel) and np.isfinite(d_descarga)):
+        valido = False
+    if not (np.isfinite(t_est) and np.isfinite(t_rel)):
+        valido = False
 
-    # Marcar validez (si algo es infinito, ese viaje es problemático)
-    valido = all(np.isfinite(x) for x in [d_aprox_est_m, d_aprox_rel_m, d_recol_m, d_desc_m, t_desde_est_s, t_desde_rel_s])
-    viaje["valido"] = bool(valido)
+    lista_viajes.append({
+        "camino": camino,
+        "carga": carga,
+        "valido": bool(valido),
+        "tiempo_s": {
+            "si_sale_estacion": float(t_est),
+            "si_sale_relleno": float(t_rel),
+        },
+        "dist_tramos_m": {
+            "aprox_desde_estacion": float(d_aprox_est),
+            "aprox_desde_relleno": float(d_aprox_rel),
+            "recoleccion": float(d_recoleccion),
+            "descarga": float(d_descarga),
+        }
+    })
 
-    # Guardar métricas en el viaje
-    viaje["paradas"] = len(ruta)
-    viaje["cluster_id"] = int(viaje.get("cluster_id", -1))
+print(f"Viajes Clarke & Wright generados: {len(lista_viajes)}")
+print(f"Viajes válidos para asignación: {sum(1 for v in lista_viajes if v.get('valido'))}")
 
-    viaje["dist_tramos_m"] = {
-        "aprox_desde_estacion": float(d_aprox_est_m),
-        "aprox_desde_relleno":  float(d_aprox_rel_m),
-        "recoleccion":          float(d_recol_m),
-        "descarga":             float(d_desc_m),
-    }
-
-    viaje["dist_total_km"] = {
-        "si_sale_estacion": float(d_total_est_m / 1000.0),
-        "si_sale_relleno":  float(d_total_rel_m / 1000.0),
-    }
-
-    viaje["tiempo_s"] = {
-        "si_sale_estacion": float(t_desde_est_s),
-        "si_sale_relleno":  float(t_desde_rel_s),
-    }
-
-    viaje["tiempo_min"] = {
-        "si_sale_estacion": float(t_desde_est_s / 60.0),
-        "si_sale_relleno":  float(t_desde_rel_s / 60.0),
-    }
-
-    # Impresión resumida (para que sea legible)
-    print(
-        f"Viaje {k:>3} | Zona {viaje['cluster_id']:>2}: {len(ruta):>3} paradas | "
-        f"Carga: {viaje['carga']:.2f} kg | "
-        f"Dist(km) Est:{viaje['dist_total_km']['si_sale_estacion']:.2f} / Rel:{viaje['dist_total_km']['si_sale_relleno']:.2f} | "
-        f"Tiempo(min) Est:{viaje['tiempo_min']['si_sale_estacion']:.1f} / Rel:{viaje['tiempo_min']['si_sale_relleno']:.1f} | "
-        f"OK:{viaje['valido']}"
-    )
-
-# Nota útil: el retorno final del turno (relleno -> estación) se calcula en CELDA 6:
-# t_retorno_casa = tiempo_fin_turno_s(dist_m, idx, id_relleno, id_estacion)
 
 # CELDA 6 (V2.2): Asignación de Viajes BALANCEADA (Best-Fit Decreasing)
 import numpy as np
 
 HORAS_TRABAJO = 8 * 3600  # 8 horas (s)
+INICIO_JORNADA_S = 6.5 * 3600
+VENTANAS_DESALOJO_S = [
+    (13 * 3600, 17 * 3600, "Tarde 13:00-17:00"),
+    (19 * 3600, 20 * 3600, "Vespertino 19:00"),
+]
 
 # --------------------------
 # Helpers de tiempo (igual)
@@ -1035,7 +1043,15 @@ def D(a, b):
 def T(a, b, vel_kmh):
     return tiempo_segundos(D(a, b), vel_kmh)
 
-V_DEPOSITO_A_EST = 40.0
+def siguiente_desalojo_programado_s(t_llegada_s):
+    for inicio, fin, etiqueta in VENTANAS_DESALOJO_S:
+        if t_llegada_s <= inicio:
+            return inicio, etiqueta
+        if inicio <= t_llegada_s <= fin:
+            return t_llegada_s, etiqueta
+    return np.inf, "Sin ventana disponible"
+
+V_DEPOSITO_A_EST = PARAMETROS_OPERATIVOS["velocidad_transito_kmh"]
 t_retorno_casa = T(id_relleno, id_estacion, V_DEPOSITO_A_EST)
 print(f"Tiempo de seguridad (Relleno -> Estación): {t_retorno_casa/60:.2f} min")
 
@@ -1072,8 +1088,27 @@ def tiempo_viaje_para_camion(viaje, camion):
     else:
         return "Relleno",  viaje["tiempo_s"]["si_sale_relleno"],  viaje["dist_tramos_m"]["aprox_desde_relleno"]
 
+def tiempo_viaje_para_camion_programado(viaje, camion):
+    es_primer = (len(camion["viajes"]) == 0)
+    if es_primer:
+        origen = "Estación"
+        t_base = viaje["tiempo_s"]["si_sale_estacion"]
+        d_aprox = viaje["dist_tramos_m"]["aprox_desde_estacion"]
+    else:
+        origen = "Relleno"
+        t_base = viaje["tiempo_s"]["si_sale_relleno"]
+        d_aprox = viaje["dist_tramos_m"]["aprox_desde_relleno"]
+
+    llegada_relleno_s = INICIO_JORNADA_S + camion["tiempo_s_sin_retorno"] + t_base
+    inicio_desalojo_s, ventana = siguiente_desalojo_programado_s(llegada_relleno_s)
+    if not np.isfinite(inicio_desalojo_s):
+        return origen, np.inf, d_aprox, np.inf, ventana
+
+    espera_s = max(0.0, inicio_desalojo_s - llegada_relleno_s)
+    return origen, t_base + espera_s, d_aprox, espera_s, ventana
+
 def cabe_en_camion(viaje, camion):
-    origen, t_viaje_s, _ = tiempo_viaje_para_camion(viaje, camion)
+    origen, t_viaje_s, _, _, _ = tiempo_viaje_para_camion_programado(viaje, camion)
     if not np.isfinite(t_viaje_s):
         return False
     # regla estricta: tiempo actual + viaje + retorno <= 8h
@@ -1084,7 +1119,7 @@ def score_best_fit(viaje, camion):
     Queremos el camión que quede MÁS lleno (proyectado) pero sin pasarse.
     Score = tiempo proyectado sin retorno (mientras más alto, mejor).
     """
-    _, t_viaje_s, _ = tiempo_viaje_para_camion(viaje, camion)
+    _, t_viaje_s, _, _, _ = tiempo_viaje_para_camion_programado(viaje, camion)
     return camion["tiempo_s_sin_retorno"] + t_viaje_s
 
 # ---------------------------------------------------------
@@ -1118,7 +1153,10 @@ for viaje in viajes_pendientes:
             continue
 
     cam = camiones[mejor_idx]
-    origen, t_viaje_s, d_aprox_m = tiempo_viaje_para_camion(viaje, cam)
+    origen, t_viaje_s, d_aprox_m, espera_desalojo_s, ventana_desalojo = tiempo_viaje_para_camion_programado(viaje, cam)
+
+    if len(camiones) > NUM_VEHICULOS:
+        print(f"Advertencia: se supero la flota disponible ({NUM_VEHICULOS} camiones).")
 
     # distancias del viaje
     ruta = viaje["camino"]
@@ -1126,25 +1164,27 @@ for viaje in viajes_pendientes:
     d_desc_m  = viaje["dist_tramos_m"]["descarga"]
 
     # tiempos por tramos (aprox/desc por velocidad fija, interno = resto)
-    t_aprox_s = tiempo_segundos(d_aprox_m, 40.0)
-    t_desc_s  = tiempo_segundos(d_desc_m, 30.0)
-    t_int_s   = t_viaje_s - t_aprox_s - t_desc_s
+    t_aprox_s = tiempo_segundos(d_aprox_m, V_ESTACION_A_PRIMERO)
+    t_desc_s  = tiempo_segundos(d_desc_m, V_ULTIMO_A_DEPOSITO)
+    t_int_s   = t_viaje_s - t_aprox_s - t_desc_s - espera_desalojo_s
 
     cam["viajes"].append({
         "nodos": ruta,
         "carga": float(viaje["carga"]),
-        "cluster_id": int(viaje.get("cluster_id", -1)),
         "origen": origen,
+        "origen_nodo": int(id_estacion if len(cam["viajes"]) == 0 else id_relleno),
         "costos": {
             "aprox_s": float(t_aprox_s),
             "interno_s": float(max(0.0, t_int_s)),
+            "espera_desalojo_s": float(max(0.0, espera_desalojo_s)),
             "descarga_s": float(t_desc_s),
         },
         "distancias_m": {
             "aprox_m": float(d_aprox_m),
             "recoleccion_m": float(d_recol_m),
             "descarga_m": float(d_desc_m),
-        }
+        },
+        "ventana_desalojo": ventana_desalojo,
     })
 
     cam["tiempo_s_sin_retorno"] += float(t_viaje_s)
@@ -1177,17 +1217,11 @@ print(f"\n✅ RESUMEN FINAL (balanceado): Se necesitan {len(camiones)} camiones.
 import geopandas as gpd
 import pandas as pd
 import numpy as np
+import rasterio
+from rasterio.mask import mask
+from rasterio.windows import Window
 from shapely.geometry import Point
 from shapely.geometry import mapping
-
-try:
-    import rasterio
-    from rasterio.mask import mask
-    from rasterio.windows import Window
-except ImportError:
-    rasterio = None
-    mask = None
-    Window = None
 
 POP_RASTER_PATH = "ecu_pd_2020_1km.tif"
 RADIO_M = 500  # buffer en metros (ajusta 200-800 según zona)
@@ -1262,40 +1296,31 @@ def densidad_vecindario(src, x, y, nodata, half_windows_px=(0, 1, 2, 3, 5, 8, 12
 densidades = []
 poblaciones = []
 
-if rasterio is None:
-    print("⚠️ rasterio no está instalado. Se omitirá la densidad poblacional real.")
-    densidades = [np.nan] * len(gdf_pts)
-    poblaciones = [np.nan] * len(gdf_pts)
-elif not os.path.exists(POP_RASTER_PATH):
-    print(f"⚠️ No se encontró el raster de población: {POP_RASTER_PATH}. Se omitirá esta capa.")
-    densidades = [np.nan] * len(gdf_pts)
-    poblaciones = [np.nan] * len(gdf_pts)
-else:
-    with rasterio.open(POP_RASTER_PATH) as src:
-        nodata = src.nodata
+with rasterio.open(POP_RASTER_PATH) as src:
+    nodata = src.nodata
 
     # buffers al CRS del raster
-        gdf_buf = gdf_m.set_geometry("buffer").to_crs(src.crs)
+    gdf_buf = gdf_m.set_geometry("buffer").to_crs(src.crs)
     # puntos al CRS del raster (para fallback vecindario)
-        gdf_pts_r = gdf_pts.to_crs(src.crs)
+    gdf_pts_r = gdf_pts.to_crs(src.crs)
 
-        for geom_buf, pt, a_km2 in zip(gdf_buf.geometry, gdf_pts_r.geometry, area_km2):
+    for geom_buf, pt, a_km2 in zip(gdf_buf.geometry, gdf_pts_r.geometry, area_km2):
         # 1) intento con buffer (promedio dentro del área)
+        dens = np.nan
+        try:
+            dens = nanmean_from_mask(src, geom_buf, nodata)
+        except Exception:
             dens = np.nan
-            try:
-                dens = nanmean_from_mask(src, geom_buf, nodata)
-            except Exception:
-                dens = np.nan
 
         # 2) si buffer es NaN -> fallback vecindario (pixel cercano válido)
-            if not np.isfinite(dens):
-                dens = densidad_vecindario(src, pt.x, pt.y, nodata)
+        if not np.isfinite(dens):
+            dens = densidad_vecindario(src, pt.x, pt.y, nodata)
 
         # 3) población estimada (densidad hab/km² * área km²)
-            pop = float(dens * a_km2) if np.isfinite(dens) else np.nan
+        pop = float(dens * a_km2) if np.isfinite(dens) else np.nan
 
-            densidades.append(dens)
-            poblaciones.append(pop)
+        densidades.append(dens)
+        poblaciones.append(pop)
 
 # Guardar resultados en gdf_pts (WGS84)
 gdf_pts["densidad_pob_km2"] = np.array(densidades, dtype=float)
@@ -1347,126 +1372,6 @@ def best_edge_attr(G, u, v, attr, default=0.0):
                 best = val
         return float(best if best is not None else default)
     return float(data.get(attr, default))
-
-def best_edge_data_dict(G, u, v):
-    data = G.get_edge_data(u, v)
-    if data is None:
-        return {}
-    if isinstance(data, dict):
-        best_attrs = None
-        best_length = np.inf
-        for _, attrs in data.items():
-            length = float(attrs.get("length", np.inf))
-            if best_attrs is None or length < best_length:
-                best_attrs = attrs
-                best_length = length
-        return best_attrs or {}
-    return data
-
-def path_street_summary(G, path, max_names=6):
-    nombres = []
-    for u, v in zip(path[:-1], path[1:]):
-        attrs = best_edge_data_dict(G, u, v)
-        nombre = attrs.get("name", "Sin nombre")
-        if isinstance(nombre, list):
-            nombre = " / ".join(str(x) for x in nombre[:2])
-        nombre = str(nombre)
-        if not nombres or nombres[-1] != nombre:
-            nombres.append(nombre)
-    if len(nombres) > max_names:
-        nombres = nombres[:max_names] + ["..."]
-    return " -> ".join(nombres)
-
-def path_oneway_pct(G, path):
-    total = 0
-    oneway = 0
-    for u, v in zip(path[:-1], path[1:]):
-        attrs = best_edge_data_dict(G, u, v)
-        total += 1
-        val = attrs.get("oneway", False)
-        if isinstance(val, str):
-            val = val.lower() in {"yes", "true", "1", "-1"}
-        if bool(val):
-            oneway += 1
-    return float((100.0 * oneway / total) if total > 0 else 0.0)
-
-def edge_usage_key(u, v):
-    """Clave no dirigida para penalizar reuso del mismo tramo vial en cualquier sentido."""
-    a, b = int(u), int(v)
-    return (a, b) if a <= b else (b, a)
-
-def registrar_uso_aristas(path, edge_usage):
-    if edge_usage is None or not path or len(path) < 2:
-        return
-    for u, v in zip(path[:-1], path[1:]):
-        k = edge_usage_key(u, v)
-        edge_usage[k] = edge_usage.get(k, 0) + 1
-
-def unir_paths(*paths):
-    salida = []
-    for path in paths:
-        if not path:
-            continue
-        if not salida:
-            salida.extend(path)
-        else:
-            salida.extend(path[1:] if salida[-1] == path[0] else path)
-    return salida
-
-def shortest_path_sin_retorno_inmediato(G, origen, destino, prev_node=None, weight="travel_time",
-                                        edge_usage=None, reuse_penalty_factor=3.0):
-    """
-    Evita un U-giro inmediato al salir del nodo origen hacia el nodo del que se acaba de llegar.
-    Además penaliza calles ya usadas para preferir tramos no recorridos si existe alternativa razonable.
-    """
-    G_search = G
-    if prev_node is not None and G.has_edge(origen, prev_node):
-        G_search = G.copy()
-        G_search.remove_edges_from([(origen, prev_node, k) for k in list(G_search[origen][prev_node].keys())])
-
-    def peso_penalizado(u, v, d):
-        if isinstance(d, dict) and d and all(isinstance(val, dict) for val in d.values()):
-            attrs_iter = d.values()
-        else:
-            attrs_iter = [d]
-
-        mejor = np.inf
-        uso = edge_usage.get(edge_usage_key(u, v), 0) if edge_usage else 0
-        for attrs in attrs_iter:
-            base = float(attrs.get(weight, np.inf))
-            if not np.isfinite(base):
-                continue
-            penalizado = base * (1.0 + reuse_penalty_factor * uso)
-            if penalizado < mejor:
-                mejor = penalizado
-        return mejor
-
-    try:
-        return nx.shortest_path(G_search, origen, destino, weight=peso_penalizado)
-    except Exception:
-        return nx.shortest_path(G, origen, destino, weight=weight)
-
-def shortest_path_obligando_via_valle(G, origen, destino, prev_node=None, weight="travel_time",
-                                      edge_usage=None, reuse_penalty_factor=3.0):
-    """
-    Fuerza el tránsito hacia el relleno pasando por el corredor operativo de Vía al Valle.
-    """
-    if not path_valle_central or nodo_valle_ciudad is None or nodo_valle_relleno is None:
-        return shortest_path_sin_retorno_inmediato(
-            G, origen, destino, prev_node=prev_node, weight=weight,
-            edge_usage=edge_usage, reuse_penalty_factor=reuse_penalty_factor
-        )
-
-    path_1 = shortest_path_sin_retorno_inmediato(
-        G, origen, nodo_valle_ciudad, prev_node=prev_node, weight=weight,
-        edge_usage=edge_usage, reuse_penalty_factor=reuse_penalty_factor
-    )
-    path_2 = path_valle_central
-    path_3 = shortest_path_sin_retorno_inmediato(
-        G, nodo_valle_relleno, destino, prev_node=None, weight=weight,
-        edge_usage=edge_usage, reuse_penalty_factor=reuse_penalty_factor
-    )
-    return unir_paths(path_1, path_2, path_3)
 
 def path_to_linestring(G, path):
     coords = [(G.nodes[n]['x'], G.nodes[n]['y']) for n in path]
@@ -1544,7 +1449,6 @@ for n in nodos_clientes:
 
     data_clientes.append({
         "id_nodo": n_int,
-        "cluster_id": int(mapa_clusteres.get(n_int, -1)),
         "demanda_kg": round(demanda, 2),
         "dist_a_estacion_m": dist_ruteada_m(G, id_estacion, n),
         "dist_a_relleno_m": dist_ruteada_m(G, n, id_relleno),
@@ -1583,10 +1487,6 @@ print("  -> Guardado: base_puntos_clave.gpkg")
 # =========================================================
 print("\n2) Generando tramos por camión/viaje (un GPKG por camión)...")
 
-# Heurística global: penaliza reusar calles ya recorridas por la flota
-# mientras existan alternativas razonables en la red.
-edge_usage_global = {}
-
 for camion in camiones:
     c_id = camion["id"]
     features = []
@@ -1599,7 +1499,6 @@ for camion in camiones:
 
         primer = nodos_ruta[0]
         ultimo = nodos_ruta[-1]
-        cluster_id = int(viaje.get("cluster_id", -1))
 
         # Origen del viaje según CELDA 6
         if viaje["origen"] == "Estación":
@@ -1610,35 +1509,20 @@ for camion in camiones:
             de_aprox = "Relleno"
 
         # TRAMO 1: APROXIMACIÓN
-        prev_incoming_node = None
+        if "origen_nodo" in viaje:
+            origen_nodo = int(viaje["origen_nodo"])
+            de_aprox = "Estacion" if origen_nodo == id_estacion else "Relleno"
+
         try:
-            path = shortest_path_sin_retorno_inmediato(
-                G,
-                origen_nodo,
-                primer,
-                prev_node=None,
-                weight="travel_time",
-                edge_usage=edge_usage_global
-            )
+            path = nx.shortest_path(G, origen_nodo, primer, weight="travel_time")
             geom_line = path_to_linestring(G, path)
             if geom_line is not None:
-                if len(path) >= 2:
-                    prev_incoming_node = path[-2]
-                registrar_uso_aristas(path, edge_usage_global)
                 features.append({
                     "Camion": c_id,
                     "Viaje": i,
-                    "Cluster": cluster_id,
                     "Tramo": "Aprox",
                     "De": de_aprox,
                     "A": "Recolección",
-                    "Sentido": f"{de_aprox} -> Recolección",
-                    "Nodo_Inicio": int(origen_nodo),
-                    "Nodo_Fin": int(primer),
-                    "Paradas": 0,
-                    "Carga_kg": 0.0,
-                    "Calles": path_street_summary(G, path),
-                    "OneWayPct": round(path_oneway_pct(G, path), 2),
                     "dur_s": float(viaje["costos"]["aprox_s"]),
                     "dist_m": path_dist_m(G, path),
                     "orden": orden_local,
@@ -1650,44 +1534,23 @@ for camion in camiones:
 
         # TRAMO 2: RECOLECCIÓN
         coords_recol = []
-        path_recol_nodos = []
         try:
             for k in range(len(nodos_ruta) - 1):
-                seg = shortest_path_sin_retorno_inmediato(
-                    G,
-                    nodos_ruta[k],
-                    nodos_ruta[k+1],
-                    prev_node=prev_incoming_node,
-                    weight="travel_time",
-                    edge_usage=edge_usage_global
-                )
+                seg = nx.shortest_path(G, nodos_ruta[k], nodos_ruta[k+1], weight="travel_time")
                 if k == 0:
                     coords_recol += [(G.nodes[n]['x'], G.nodes[n]['y']) for n in seg]
-                    path_recol_nodos += seg
                 else:
                     coords_recol += [(G.nodes[n]['x'], G.nodes[n]['y']) for n in seg[1:]]
-                    path_recol_nodos += seg[1:]
-                registrar_uso_aristas(seg, edge_usage_global)
-                if len(seg) >= 2:
-                    prev_incoming_node = seg[-2]
 
             if len(coords_recol) >= 2:
-                dist_recol = path_dist_m(G, path_recol_nodos)
+                dist_recol = dist_recoleccion_m(G, nodos_ruta)
 
                 features.append({
                     "Camion": c_id,
                     "Viaje": i,
-                    "Cluster": cluster_id,
                     "Tramo": "Recol",
                     "De": "Recolección",
                     "A": "Recolección",
-                    "Sentido": "Recolección -> Recolección",
-                    "Nodo_Inicio": int(primer),
-                    "Nodo_Fin": int(ultimo),
-                    "Paradas": int(len(nodos_ruta)),
-                    "Carga_kg": float(viaje["carga"]),
-                    "Calles": path_street_summary(G, path_recol_nodos),
-                    "OneWayPct": round(path_oneway_pct(G, path_recol_nodos), 2),
                     "dur_s": float(viaje["costos"]["interno_s"]),
                     "dist_m": dist_recol,
                     "orden": orden_local,
@@ -1699,31 +1562,15 @@ for camion in camiones:
 
         # TRAMO 3: DESCARGA
         try:
-            path = shortest_path_obligando_via_valle(
-                G,
-                ultimo,
-                id_relleno,
-                prev_node=prev_incoming_node,
-                weight="travel_time",
-                edge_usage=edge_usage_global
-            )
+            path = nx.shortest_path(G, ultimo, id_relleno, weight="travel_time")
             geom_line = path_to_linestring(G, path)
             if geom_line is not None:
-                registrar_uso_aristas(path, edge_usage_global)
                 features.append({
                     "Camion": c_id,
                     "Viaje": i,
-                    "Cluster": cluster_id,
                     "Tramo": "Desc",
                     "De": "Recolección",
                     "A": "Relleno",
-                    "Sentido": "Recolección -> Relleno",
-                    "Nodo_Inicio": int(ultimo),
-                    "Nodo_Fin": int(id_relleno),
-                    "Paradas": 0,
-                    "Carga_kg": 0.0,
-                    "Calles": path_street_summary(G, path),
-                    "OneWayPct": round(path_oneway_pct(G, path), 2),
                     "dur_s": float(viaje["costos"]["descarga_s"]),
                     "dist_m": path_dist_m(G, path),
                     "orden": orden_local,
@@ -1735,33 +1582,17 @@ for camion in camiones:
 
     # FIN DEL TURNO
     try:
-        path = shortest_path_sin_retorno_inmediato(
-            G,
-            id_relleno,
-            id_estacion,
-            prev_node=None,
-            weight="travel_time",
-            edge_usage=edge_usage_global
-        )
+        path = nx.shortest_path(G, id_relleno, id_estacion, weight="travel_time")
         geom_line = path_to_linestring(G, path)
         if geom_line is not None:
             dur_fin = float(globals().get("t_retorno_casa", path_time_s(G, path)))
-            registrar_uso_aristas(path, edge_usage_global)
 
             features.append({
                 "Camion": c_id,
                 "Viaje": "FIN",
-                "Cluster": -1,
                 "Tramo": "Fin",
                 "De": "Relleno",
                 "A": "Estación",
-                "Sentido": "Relleno -> Estación",
-                "Nodo_Inicio": int(id_relleno),
-                "Nodo_Fin": int(id_estacion),
-                "Paradas": 0,
-                "Carga_kg": 0.0,
-                "Calles": path_street_summary(G, path),
-                "OneWayPct": round(path_oneway_pct(G, path), 2),
                 "dur_s": dur_fin,
                 "dist_m": path_dist_m(G, path),
                 "orden": orden_local,
@@ -1868,6 +1699,10 @@ for camion in camiones:
         else:
             origen_nodo = id_relleno
             origen_tipo = "Relleno"
+
+        if "origen_nodo" in viaje:
+            origen_nodo = int(viaje["origen_nodo"])
+            origen_tipo = "Estacion" if origen_nodo == id_estacion else "Relleno"
 
         t_aprox_s = float(viaje["costos"]["aprox_s"])
         d_aprox_km = dist_km_ruteada(G, origen_nodo, primer)
@@ -2007,6 +1842,32 @@ if total_km > 0 and KM_POR_GALON > 0:
     print(f"Costo estimado: ${costo:.2f}")
     print(f"Eficiencia: {(total_ton/total_km):.4f} ton/km")
 
+BASE_BRYAN_HISTORICO = {
+    "escenario": "Base Bryan historico",
+    "camiones_usados": 3,
+    "viajes_asignados": 12,
+    "distancia_total_km": 402.21,
+    "tiempo_total_h": 21.12,
+}
+HIBRIDO_ACTUAL_MACRO = {
+    "escenario": "Hibrido actual",
+    "camiones_usados": total_camiones,
+    "viajes_asignados": int(sum(len(c.get("viajes", [])) for c in camiones)),
+    "distancia_total_km": total_km,
+    "tiempo_total_h": total_h,
+}
+df_comparacion_operativa = pd.DataFrame([BASE_BRYAN_HISTORICO, HIBRIDO_ACTUAL_MACRO])
+for col in ["camiones_usados", "viajes_asignados", "distancia_total_km", "tiempo_total_h"]:
+    base_val = float(df_comparacion_operativa.loc[0, col])
+    actual_val = float(df_comparacion_operativa.loc[1, col])
+    df_comparacion_operativa[f"mejora_{col}_pct"] = np.nan
+    if base_val > 0:
+        df_comparacion_operativa.loc[1, f"mejora_{col}_pct"] = 100 * (base_val - actual_val) / base_val
+df_comparacion_operativa.to_csv("comparacion_operativa.csv", index=False, encoding="utf-8-sig")
+
+print("\n=== COMPARACION OPERATIVA VS BASE BRYAN ===")
+display(df_comparacion_operativa.round(2))
+
 # CELDA 9 (FIX): HTML Leaflet animado (capas + camiones 🚚 + velocidad) SIN f-string
 import geopandas as gpd
 import json
@@ -2018,9 +1879,9 @@ import os
 CLIENTES_GPKG = "base_clientes.gpkg"
 PUNTOS_CLAVE_GPKG = "base_puntos_clave.gpkg"
 CALLES_GPKG = "base_calles.gpkg"      # opcional (puede ser pesado)
-INCLUIR_CALLES = False               # True si quieres calles en el HTML
+INCLUIR_CALLES = True                # Muestra la red vial base en el HTML
 
-CAMIONES = [int(c["id"]) for c in camiones]
+CAMIONES = [int(c["id"]) for c in camiones] if "camiones" in globals() and camiones else [1, 2, 3]
 RUTA_GPKG_FMT = "rutas_tramos_Camion_{}.gpkg"
 LAYER_TRAMOS = "tramos"
 
@@ -2087,7 +1948,7 @@ for c in CAMIONES:
 
     if gdf_tramos is None or len(gdf_tramos) == 0:
         print(f"⚠️ Camión {c}: sin tramos")
-        rutas_camiones[c] = {"coords": [], "tramos": [], "resumen": {"camion": c, "dist_km": 0.0, "dur_min": 0.0}}
+        rutas_camiones[c] = []
         continue
 
     gdf_tramos = gdf_tramos.to_crs("EPSG:4326").copy()
@@ -2095,9 +1956,7 @@ for c in CAMIONES:
         gdf_tramos = gdf_tramos.sort_values("orden")
 
     coords = []
-    tramos_payload = []
-    for _, row in gdf_tramos.iterrows():
-        geom = row.geometry
+    for geom in gdf_tramos.geometry:
         if geom is None:
             continue
 
@@ -2116,37 +1975,68 @@ for c in CAMIONES:
         else:
             coords += latlon
 
-        tramos_payload.append({
-            "viaje": str(row.get("Viaje", "")),
-            "tramo": str(row.get("Tramo", "")),
-            "de": str(row.get("De", "")),
-            "a": str(row.get("A", "")),
-            "sentido": str(row.get("Sentido", "")),
-            "cluster": int(row.get("Cluster", -1)),
-            "paradas": int(row.get("Paradas", 0)),
-            "carga_kg": float(row.get("Carga_kg", 0.0)),
-            "dist_km": float(row.get("dist_m", 0.0)) / 1000.0,
-            "dur_min": float(row.get("dur_s", 0.0)) / 60.0,
-            "calles": str(row.get("Calles", "")),
-            "oneway_pct": float(row.get("OneWayPct", 0.0)),
-            "coords": latlon
-        })
-
-    rutas_camiones[c] = {
-        "coords": coords,
-        "tramos": tramos_payload,
-        "resumen": {
-            "camion": int(c),
-            "dist_km": float(gdf_tramos["dist_m"].fillna(0).sum() / 1000.0),
-            "dur_min": float(gdf_tramos["dur_s"].fillna(0).sum() / 60.0),
-            "n_tramos": int(len(tramos_payload))
-        }
-    }
+    rutas_camiones[c] = coords
     print(f"✅ Camión {c}: {len(coords)} puntos de ruta")
 
 
 # -----------------------------
-# 3) Template HTML (sin f-string)
+# 3) Datos resumidos para el tablero HTML
+# -----------------------------
+metricas_html = {
+    "global": {
+        "camiones_usados": len(camiones),
+        "viajes_asignados": int(sum(len(c.get("viajes", [])) for c in camiones)),
+        "clientes": int(len(nodos_clientes)) if "nodos_clientes" in globals() else 0,
+        "carga_total_kg": float(sum(sum(float(v.get("carga", 0.0)) for v in c.get("viajes", [])) for c in camiones)),
+        "tiempo_total_h": float(sum(float(c.get("tiempo_total_h", 0.0)) for c in camiones)),
+    },
+    "camiones": [],
+    "viajes": [],
+}
+
+for c in camiones:
+    c_id = int(c.get("id", 0))
+    viajes = c.get("viajes", []) or []
+    carga = float(sum(float(v.get("carga", 0.0)) for v in viajes))
+    distancia_m = float(sum(
+        sum(float(x or 0.0) for x in (v.get("distancias_m", {}) or {}).values())
+        for v in viajes
+    ))
+    tiempo_viajes_s = float(sum(
+        sum(float(x or 0.0) for x in (v.get("costos", {}) or {}).values())
+        for v in viajes
+    ))
+    metricas_html["camiones"].append({
+        "id": c_id,
+        "viajes": len(viajes),
+        "carga_kg": carga,
+        "paradas": int(sum(len(v.get("nodos", []) or []) for v in viajes)),
+        "distancia_km": distancia_m / 1000.0,
+        "tiempo_h": float(c.get("tiempo_total_h", 0.0)),
+        "tiempo_viajes_min": tiempo_viajes_s / 60.0,
+        "uso_jornada_pct": 100.0 * float(c.get("tiempo_total_h", 0.0)) / 8.0,
+    })
+    for idx_v, v in enumerate(viajes, start=1):
+        dist = v.get("distancias_m", {}) or {}
+        costos = v.get("costos", {}) or {}
+        metricas_html["viajes"].append({
+            "camion": c_id,
+            "viaje": idx_v,
+            "origen": v.get("origen", "N/A"),
+            "paradas": int(len(v.get("nodos", []) or [])),
+            "carga_kg": float(v.get("carga", 0.0)),
+            "aprox_km": float(dist.get("aprox_m", 0.0)) / 1000.0,
+            "recoleccion_km": float(dist.get("recoleccion_m", 0.0)) / 1000.0,
+            "descarga_km": float(dist.get("descarga_m", 0.0)) / 1000.0,
+            "aprox_min": float(costos.get("aprox_s", 0.0)) / 60.0,
+            "recoleccion_min": float(costos.get("interno_s", 0.0)) / 60.0,
+            "espera_desalojo_min": float(costos.get("espera_desalojo_s", 0.0)) / 60.0,
+            "descarga_min": float(costos.get("descarga_s", 0.0)) / 60.0,
+            "ventana_desalojo": v.get("ventana_desalojo", "N/A"),
+        })
+
+# -----------------------------
+# 4) Template HTML (sin f-string)
 # -----------------------------
 html = """<!DOCTYPE html>
 <html lang="es">
@@ -2159,44 +2049,68 @@ html = """<!DOCTYPE html>
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
   />
   <style>
-    html, body { height: 100%; margin: 0; }
-    #map { width: 100%; height: 100%; }
-    .control-panel {
-      position: absolute;
-      top: 12px; left: 12px;
-      z-index: 9999;
-      background: rgba(255,255,255,0.92);
-      padding: 10px 12px;
-      border-radius: 10px;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.15);
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial;
-      min-width: 260px;
+    :root {
+      color-scheme: light;
+      --ink: #172033;
+      --muted: #64748b;
+      --line: #d8dee8;
+      --surface: rgba(255,255,255,0.94);
+      --shadow: 0 18px 50px rgba(15, 23, 42, 0.18);
     }
-    .row { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
-    .row label { font-size: 13px; }
-    .btn {
-      cursor: pointer;
-      border: 0;
-      padding: 8px 10px;
-      border-radius: 10px;
-      background: #1f2937;
-      color: white;
-      font-weight: 600;
-    }
+    html, body { height: 100%; margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; color: var(--ink); }
+    #map { width: 100%; height: 100%; background: #eef2f6; }
+    .app-shell { position: absolute; inset: 14px; z-index: 9999; pointer-events: none; display: grid; grid-template-columns: 360px minmax(0, 1fr) 410px; gap: 14px; }
+    .panel { pointer-events: auto; background: var(--surface); border: 1px solid rgba(216,222,232,0.9); box-shadow: var(--shadow); backdrop-filter: blur(14px); }
+    .control-panel { position: absolute; top: 14px; left: 14px; width: 340px; z-index: 9999; border-radius: 8px; padding: 14px; background: var(--surface); border: 1px solid rgba(216,222,232,0.9); box-shadow: var(--shadow); backdrop-filter: blur(14px); }
+    .summary-panel { position: absolute; top: 84px; right: 14px; bottom: 14px; width: 380px; z-index: 9999; border-radius: 8px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+    .panel-title { font-size: 12px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0 0 4px; }
+    .headline { margin: 0 0 14px; font-size: 21px; line-height: 1.15; letter-spacing: 0; }
+    .row { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
+    .btn { cursor: pointer; border: 1px solid #111827; padding: 9px 11px; border-radius: 6px; background: #111827; color: white; font-weight: 750; font-size: 13px; }
+    .btn.secondary { background: #ffffff; color: #1f2937; border-color: #cbd5e1; }
+    .btn.info { background: #0f766e; border-color: #0f766e; }
     .btn:active { transform: translateY(1px); }
-    .small { font-size: 12px; color: #374151; }
-    .truck-icon {
-      font-size: 22px;
-      line-height: 22px;
-      filter: drop-shadow(0 2px 2px rgba(0,0,0,0.25));
+    .small { font-size: 12px; color: var(--muted); line-height: 1.35; }
+    .metric-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
+    .metric { border: 1px solid var(--line); border-radius: 7px; padding: 10px; background: #fff; min-height: 58px; }
+    .metric .label { display: block; color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+    .metric .value { display: block; margin-top: 4px; font-size: 20px; line-height: 1; font-weight: 850; }
+    .slider-row { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; }
+    input[type="range"] { width: 100%; accent-color: #0f766e; }
+    .truck-icon { width: 28px; height: 28px; border-radius: 999px; display: grid; place-items: center; background: #fff; border: 2px solid currentColor; box-shadow: 0 4px 12px rgba(15,23,42,.25); font-size: 16px; font-weight: 900; }
+    .summary-head { padding: 16px 16px 12px; border-bottom: 1px solid var(--line); }
+    .summary-body { overflow: auto; padding: 10px 14px 14px; }
+    .truck-card { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #fff; margin-bottom: 8px; }
+    .truck-card.active { border-color: currentColor; box-shadow: inset 4px 0 0 currentColor; }
+    .truck-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 10px; }
+    .truck-name { font-weight: 850; font-size: 15px; }
+    .swatch { width: 12px; height: 12px; border-radius: 99px; display: inline-block; margin-right: 8px; vertical-align: -1px; }
+    .pill { border: 1px solid var(--line); border-radius: 999px; padding: 4px 8px; font-size: 11px; color: var(--muted); font-weight: 750; }
+    .stat-line { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .stat-line div { background: #f8fafc; border-radius: 6px; padding: 8px; }
+    .stat-line b { display: block; font-size: 13px; }
+    .stat-line span { color: var(--muted); font-size: 11px; }
+    .progress { margin-top: 10px; height: 7px; background: #e2e8f0; border-radius: 99px; overflow: hidden; }
+    .progress i { display: block; height: 100%; width: var(--p); background: currentColor; }
+    .routes-title { font-size: 13px; font-weight: 850; margin: 16px 0 8px; }
+    .route-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .route-table th { text-align: left; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--line); padding: 7px 4px; }
+    .route-table td { border-bottom: 1px solid #eef2f7; padding: 8px 4px; vertical-align: top; }
+    .leaflet-control-layers { border-radius: 8px !important; box-shadow: var(--shadow) !important; border: 1px solid var(--line) !important; }
+    .leaflet-top.leaflet-right { right: 408px; top: 14px; }
+    @media (max-width: 980px) {
+      .app-shell { inset: 10px; grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+      .summary-panel { grid-column: 1; max-height: 42vh; align-self: end; }
+      .control-panel { max-width: 360px; }
     }
-    input[type="range"] { width: 170px; }
   </style>
 </head>
 <body>
 <div id="map"></div>
 
 <div class="control-panel">
+  <p class="panel-title">Operacion urbana</p>
+  <h1 class="headline">Rutas optimizadas de recoleccion</h1>
   <div class="row">
     <button id="btnPlay" class="btn">▶ Reproducir</button>
     <button id="btnPause" class="btn" style="background:#6b7280;">⏸ Pausa</button>
@@ -2209,10 +2123,29 @@ html = """<!DOCTYPE html>
     <span id="speedVal" class="small">1.5×</span>
   </div>
 
+  <div class="metric-grid" id="globalMetrics"></div>
+
   <div class="small">
     Tip: Activa/desactiva capas desde el control (arriba derecha).
   </div>
 </div>
+
+<section class="panel summary-panel">
+  <div class="summary-head">
+    <p class="panel-title">Resumen operativo</p>
+    <h2 class="headline" style="font-size:18px;margin-bottom:0;">Camiones, viajes y tramos</h2>
+  </div>
+  <div class="summary-body">
+    <div id="truckCards"></div>
+    <div class="routes-title">Detalle de rutas</div>
+    <table class="route-table">
+      <thead>
+        <tr><th>Camion</th><th>Viaje</th><th>Operacion</th><th>Km</th><th>Min</th></tr>
+      </thead>
+      <tbody id="routeRows"></tbody>
+    </table>
+  </div>
+</section>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
@@ -2221,6 +2154,7 @@ html = """<!DOCTYPE html>
   const CLAVE    = __CLAVE__;
   const CALLES   = __CALLES__;
   const RUTAS    = __RUTAS__;
+  const METRICAS = __METRICAS__;
 
   // Mapa base
   const map = L.map('map', {
@@ -2278,12 +2212,72 @@ html = """<!DOCTYPE html>
     return L.polyline(rutaLatLon, { color, weight: 5, opacity: 0.9 });
   }
 
-  const colores = { "1": "#2563eb", "2": "#ef4444", "3": "#a855f7" };
+  const colores = { "1": "#2563eb", "2": "#dc2626", "3": "#7c3aed", "4": "#0891b2", "5": "#16a34a", "6": "#ca8a04" };
   const layerRutas = {};
   Object.keys(RUTAS).forEach(k => {
     const poly = polylineFromRuta(RUTAS[k], colores[k] || "#111827");
     if (poly) layerRutas[k] = poly;
   });
+
+  const fmt = new Intl.NumberFormat("es-EC", { maximumFractionDigits: 1 });
+  const fmt0 = new Intl.NumberFormat("es-EC", { maximumFractionDigits: 0 });
+
+  function metric(label, value) {
+    return `<div class="metric"><span class="label">${label}</span><span class="value">${value}</span></div>`;
+  }
+
+  function renderDashboard() {
+    const global = METRICAS.global || {};
+    const totalKm = (METRICAS.camiones || []).reduce((acc, c) => acc + (c.distancia_km || 0), 0);
+    const globalBox = document.getElementById("globalMetrics");
+    if (globalBox) {
+      globalBox.innerHTML = [
+        metric("Camiones", fmt0.format(global.camiones_usados || 0)),
+        metric("Viajes", fmt0.format(global.viajes_asignados || 0)),
+        metric("Carga", `${fmt.format((global.carga_total_kg || 0) / 1000)} t`),
+        metric("Tiempo", `${fmt.format(global.tiempo_total_h || 0)} h`)
+      ].join("");
+    }
+
+    const cards = document.getElementById("truckCards");
+    if (cards) {
+      cards.innerHTML = (METRICAS.camiones || []).map(c => {
+        const color = colores[String(c.id)] || "#111827";
+        return `
+          <article class="truck-card" id="truckCard-${c.id}" style="color:${color}">
+            <div class="truck-top">
+              <div class="truck-name"><span class="swatch" style="background:${color}"></span>Camion ${c.id}</div>
+              <span class="pill">${fmt.format(c.tiempo_h || 0)} h</span>
+            </div>
+            <div class="stat-line">
+              <div><b>${fmt0.format(c.viajes || 0)}</b><span>viajes</span></div>
+              <div><b>${fmt0.format(c.paradas || 0)}</b><span>paradas</span></div>
+              <div><b>${fmt.format(c.distancia_km || 0)}</b><span>km</span></div>
+            </div>
+            <div class="progress" style="--p:${Math.min(100, c.uso_jornada_pct || 0)}%"><i></i></div>
+            <div class="small" style="margin-top:7px;">Carga: ${fmt.format((c.carga_kg || 0) / 1000)} t · Uso jornada: ${fmt.format(c.uso_jornada_pct || 0)}%</div>
+          </article>
+        `;
+      }).join("");
+    }
+
+    const rows = document.getElementById("routeRows");
+    if (rows) {
+      rows.innerHTML = (METRICAS.viajes || []).flatMap(v => {
+        const c = String(v.camion);
+        const color = colores[c] || "#111827";
+        const base = `<td><span class="swatch" style="background:${color}"></span>${v.camion}</td><td>${v.viaje}</td>`;
+        return [
+          `<tr data-camion="${c}">${base}<td>Aproximacion desde ${v.origen}</td><td>${fmt.format(v.aprox_km || 0)}</td><td>${fmt.format(v.aprox_min || 0)}</td></tr>`,
+          `<tr data-camion="${c}">${base}<td>Recoleccion (${fmt0.format(v.paradas || 0)} paradas)</td><td>${fmt.format(v.recoleccion_km || 0)}</td><td>${fmt.format(v.recoleccion_min || 0)}</td></tr>`,
+          `<tr data-camion="${c}">${base}<td>Espera ventana ${v.ventana_desalojo || ""}</td><td>0</td><td>${fmt.format(v.espera_desalojo_min || 0)}</td></tr>`,
+          `<tr data-camion="${c}">${base}<td>Desalojo programado</td><td>${fmt.format(v.descarga_km || 0)}</td><td>${fmt.format(v.descarga_min || 0)}</td></tr>`
+        ];
+      }).join("");
+    }
+  }
+
+  renderDashboard();
 
   // Control de capas
   const overlays = {
@@ -2350,6 +2344,7 @@ html = """<!DOCTYPE html>
 
   // Crear un camión por ruta
   const trucks = [];
+  const truckByRoute = {};
   Object.keys(RUTAS).forEach(k => {
     const coords = RUTAS[k];
     if (!coords || coords.length < 2) return;
@@ -2370,6 +2365,36 @@ html = """<!DOCTYPE html>
       dist: 0
     });
     trucks[trucks.length-1].marker = marker;
+    truckByRoute[k] = marker;
+  });
+
+  function camionIdFromLayerName(name) {
+    const match = String(name || "").match(/(\\d+)$/);
+    return match ? match[1] : null;
+  }
+
+  function setRouteUiState(id, visible) {
+    const card = document.getElementById(`truckCard-${id}`);
+    if (card) card.classList.toggle("active", visible);
+    document.querySelectorAll(`[data-camion="${id}"]`).forEach(row => {
+      row.style.display = visible ? "" : "none";
+    });
+  }
+
+  Object.keys(truckByRoute).forEach(id => setRouteUiState(id, true));
+  map.on("overlayremove", e => {
+    const id = camionIdFromLayerName(e.name);
+    if (id && truckByRoute[id] && map.hasLayer(truckByRoute[id])) {
+      map.removeLayer(truckByRoute[id]);
+      setRouteUiState(id, false);
+    }
+  });
+  map.on("overlayadd", e => {
+    const id = camionIdFromLayerName(e.name);
+    if (id && truckByRoute[id] && !map.hasLayer(truckByRoute[id])) {
+      truckByRoute[id].addTo(map);
+      setRouteUiState(id, true);
+    }
   });
 
   let running = false;
@@ -2434,731 +2459,12 @@ html = """<!DOCTYPE html>
 </html>
 """
 
-html = """<!DOCTYPE html>
-<html lang="es">
-<head>
-  <meta charset="utf-8" />
-  <title>Rutas de Recoleccion</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <style>
-    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
-    html, body { height: 100%; margin: 0; }
-    body { font-family: 'IBM Plex Sans', sans-serif; background: #f3f0e8; }
-    #map { width: 100%; height: 100%; }
-    .control-panel {
-      position: absolute;
-      top: 12px; left: 12px;
-      z-index: 9999;
-      width: min(360px, calc(100vw - 24px));
-      background: rgba(255,248,239,0.96);
-      padding: 14px 16px;
-      border-radius: 16px;
-      box-shadow: 0 14px 28px rgba(32, 23, 12, 0.18);
-      border: 1px solid rgba(129, 90, 43, 0.18);
-    }
-    .panel-title { font-size: 18px; font-weight: 700; color: #3f2d17; margin-bottom: 8px; }
-    .panel-subtitle { font-size: 12px; color: #6b5a45; margin-bottom: 12px; }
-    .row { display: flex; gap: 8px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
-    .row label { font-size: 13px; color: #47392a; }
-    .btn {
-      cursor: pointer;
-      border: 0;
-      padding: 8px 10px;
-      border-radius: 12px;
-      background: #3f2d17;
-      color: white;
-      font-weight: 600;
-      font-family: inherit;
-    }
-    .btn:active { transform: translateY(1px); }
-    .small { font-size: 12px; color: #5f5244; }
-    .stats-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
-      margin: 12px 0;
-    }
-    .stat-card {
-      background: #fffdf8;
-      border-radius: 12px;
-      padding: 10px;
-      border: 1px solid rgba(129, 90, 43, 0.14);
-    }
-    .stat-label {
-      font-size: 11px;
-      color: #7c6c58;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-    .stat-value {
-      font-size: 18px;
-      font-weight: 700;
-      color: #2b241d;
-      margin-top: 2px;
-    }
-    .legend { display: grid; gap: 6px; margin-top: 8px; }
-    .legend-item { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #48392b; }
-    .legend-line { width: 22px; height: 5px; border-radius: 999px; }
-    .quick-selector {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 8px;
-      margin-top: 10px;
-    }
-    .quick-actions {
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 8px;
-      margin-top: 10px;
-    }
-    .truck-chip {
-      border: 1px solid rgba(129, 90, 43, 0.18);
-      background: #fffdf8;
-      color: #3f2d17;
-      border-radius: 999px;
-      padding: 8px 10px;
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.15s ease;
-    }
-    .truck-chip.active {
-      color: white;
-      border-color: transparent;
-      box-shadow: 0 6px 16px rgba(31, 41, 55, 0.18);
-    }
-    .route-focus {
-      margin-top: 10px;
-      padding: 10px 12px;
-      border-radius: 12px;
-      background: #fffdf8;
-      border: 1px solid rgba(129, 90, 43, 0.12);
-      font-size: 12px;
-      color: #4b3c2c;
-    }
-    .status-bar {
-      margin-top: 10px;
-      padding: 10px 12px;
-      border-radius: 12px;
-      background: #fffdf8;
-      border: 1px solid rgba(129, 90, 43, 0.12);
-      font-size: 12px;
-      color: #4b3c2c;
-    }
-    .trip-list { margin-top: 10px; max-height: 220px; overflow: auto; padding-right: 4px; }
-    .trip-item {
-      padding: 8px 10px;
-      margin-bottom: 6px;
-      background: #fffdf8;
-      border-radius: 10px;
-      border: 1px solid rgba(129, 90, 43, 0.12);
-      font-size: 12px;
-      color: #44372a;
-      cursor: pointer;
-    }
-    .trip-item.active {
-      border-color: rgba(250, 204, 21, 0.85);
-      box-shadow: 0 0 0 2px rgba(250, 204, 21, 0.20) inset;
-    }
-    .trip-item strong { color: #2d241c; }
-    .truck-icon {
-      font-size: 22px;
-      line-height: 22px;
-      filter: drop-shadow(0 2px 3px rgba(0,0,0,0.30));
-    }
-    .arrow-icon {
-      color: #111827;
-      font-size: 16px;
-      font-weight: 700;
-      text-shadow: 0 0 3px rgba(255,255,255,0.95);
-      transform-origin: center center;
-    }
-    .sense-badge {
-      background: rgba(17,24,39,0.92);
-      color: #ffffff;
-      border-radius: 999px;
-      padding: 4px 8px;
-      font-size: 11px;
-      font-weight: 700;
-      box-shadow: 0 4px 12px rgba(15, 23, 42, 0.22);
-      white-space: nowrap;
-    }
-    input[type="range"] { width: 170px; }
-    .leaflet-popup-content { font-family: 'IBM Plex Sans', sans-serif; font-size: 12px; }
-  </style>
-</head>
-<body>
-<div id="map"></div>
-
-<div class="control-panel">
-  <div class="panel-title">Rutas de Recoleccion</div>
-  <div class="panel-subtitle">Selecciona un camion para enfocar su recorrido.</div>
-  <div class="row">
-    <button id="btnPlay" class="btn">Reproducir</button>
-    <button id="btnPause" class="btn" style="background:#7b6a58;">Pausa</button>
-    <button id="btnReset" class="btn" style="background:#0f766e;">Reiniciar</button>
-  </div>
-  <div class="row">
-    <label><b>Velocidad</b>:</label>
-    <input id="speed" type="range" min="0.25" max="6" step="0.25" value="1.5">
-    <span id="speedVal" class="small">1.5x</span>
-  </div>
-  <div class="stats-grid">
-    <div class="stat-card"><div class="stat-label">Camiones</div><div id="statCamiones" class="stat-value">0</div></div>
-    <div class="stat-card"><div class="stat-label">Tramos</div><div id="statTramos" class="stat-value">0</div></div>
-    <div class="stat-card"><div class="stat-label">Distancia</div><div id="statKm" class="stat-value">0 km</div></div>
-    <div class="stat-card"><div class="stat-label">Tiempo</div><div id="statHoras" class="stat-value">0 h</div></div>
-  </div>
-  <div class="small">Selecciona un camion para enfocarlo o usa mostrar todos para volver a la vista general.</div>
-  <div class="quick-actions">
-    <button id="btnShowAll" class="btn" style="background:#334155;">Mostrar todos</button>
-  </div>
-  <div class="quick-selector" id="quickSelector"></div>
-  <div class="route-focus" id="routeFocus">
-    Selecciona un camion para ver su ruta y sus viajes.
-  </div>
-  <div class="status-bar" id="statusBar">
-    Animacion lista. Al seleccionar un camion, el mapa ocultara automaticamente los demas.
-  </div>
-  <div class="trip-list" id="tripList"></div>
-</div>
-
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script>
-  const CLIENTES = __CLIENTES__;
-  const CLAVE = __CLAVE__;
-  const CALLES = __CALLES__;
-  const RUTAS = __RUTAS__;
-  const colores = { "1": "#2563eb", "2": "#ef4444", "3": "#a855f7" };
-  const coloresCluster = ["#f97316", "#0ea5e9", "#84cc16", "#ef4444", "#8b5cf6", "#14b8a6", "#f59e0b", "#ec4899"];
-
-  const map = L.map('map', { center: [__CENTRO_LAT__, __CENTRO_LON__], zoom: 14 });
-  const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '&copy; OpenStreetMap'
-  }).addTo(map);
-
-  function styleClientes(feature) {
-    const p = feature.properties || {};
-    const d = (p.demanda_kg !== undefined && p.demanda_kg !== null) ? p.demanda_kg : 0;
-    const cluster = (p.cluster_id !== undefined && p.cluster_id !== null) ? p.cluster_id : -1;
-    const r = Math.max(2, Math.min(10, 2 + d / 200));
-    const fill = cluster >= 0 ? coloresCluster[cluster % coloresCluster.length] : "#f97316";
-    return { radius: r, color: "#111827", weight: 1, fillColor: fill, fillOpacity: 0.85 };
-  }
-
-  const layerClientes = L.geoJSON(CLIENTES, {
-    pointToLayer: (f, latlng) => L.circleMarker(latlng, styleClientes(f)),
-    onEachFeature: (f, layer) => {
-      const p = f.properties || {};
-      const dens = (p.densidad_pob_km2 !== undefined && p.densidad_pob_km2 !== null) ? p.densidad_pob_km2 : "-";
-      const cluster = (p.cluster_id !== undefined && p.cluster_id !== null) ? p.cluster_id : "-";
-      layer.bindPopup(
-        `<b>Cliente</b><br>` +
-        `Nodo: ${(p.id_nodo !== undefined && p.id_nodo !== null) ? p.id_nodo : "-"}<br>` +
-        `Zona: ${cluster}<br>` +
-        `Demanda: ${(p.demanda_kg !== undefined && p.demanda_kg !== null) ? p.demanda_kg : "-"} kg<br>` +
-        `Densidad: ${dens} hab/km²`
-      );
-    }
-  });
-
-  const layerClave = L.geoJSON(CLAVE, {
-    pointToLayer: (f, latlng) => {
-      const tipo = (f.properties && f.properties.tipo) ? f.properties.tipo : "Punto";
-      return L.marker(latlng).bindPopup(`<b>${tipo}</b>`);
-    }
-  });
-
-  const layerCalles = L.geoJSON(CALLES, { style: { color: "#22c55e", weight: 2, opacity: 0.55 } });
-
-  function tramoStyle(color, tramo) {
-    const weight = tramo === "Recol" ? 6 : 4;
-    const dashArray = tramo === "Fin" ? "8 8" : null;
-    return { color, weight, opacity: 0.92, dashArray };
-  }
-
-  function formatHoursFromMinutes(minutes, decimals = 2) {
-    return `${(minutes / 60.0).toFixed(decimals)} h`;
-  }
-
-  function hasValue(value) {
-    return value !== null && value !== undefined && value !== "" && !Number.isNaN(value);
-  }
-
-  function pushIf(lines, label, value) {
-    if (hasValue(value)) lines.push(`${label}: ${value}`);
-  }
-
-  function bearingDeg(a, b) {
-    return Math.atan2(b[0] - a[0], b[1] - a[1]) * 180 / Math.PI;
-  }
-
-  function arrowMarker(latlng, angle, color) {
-    const html = `<div class="arrow-icon" style="color:${color}; transform: rotate(${angle}deg);">▶</div>`;
-    return L.marker(latlng, {
-      icon: L.divIcon({ className: "", html, iconSize: [16, 16], iconAnchor: [8, 8] }),
-      interactive: false
-    });
-  }
-
-  function buildArrowGroup(coords, color) {
-    const group = L.layerGroup();
-    if (!coords || coords.length < 2) return group;
-    const step = Math.max(2, Math.floor(coords.length / 5));
-    for (let i = step; i < coords.length; i += step) {
-      group.addLayer(arrowMarker(coords[i], bearingDeg(coords[i - 1], coords[i]), color));
-    }
-    return group;
-  }
-
-  function labelMarker(latlng, text, bgColor) {
-    const html = `<div class="sense-badge" style="background:${bgColor};">${text}</div>`;
-    return L.marker(latlng, {
-      icon: L.divIcon({ className: "", html, iconSize: null, iconAnchor: [0, 0] }),
-      interactive: false
-    });
-  }
-
-  const layerRutas = {};
-  const allPolys = [];
-  const allTramos = [];
-  const truckRouteCoords = {};
-  let activeTruckId = null;
-  let activeTripKey = null;
-  const tripsByTruck = {};
-
-  Object.keys(RUTAS).forEach(k => {
-    const payload = RUTAS[k] || {};
-    const tramos = payload.tramos || [];
-    const color = colores[k] || "#111827";
-    const group = L.layerGroup();
-
-    tramos.forEach(tramo => {
-      if (!tramo.coords || tramo.coords.length < 2) return;
-      const poly = L.polyline(tramo.coords, tramoStyle(color, tramo.tramo));
-      const popupLines = [`<b>Camion ${k} - Tramo ${tramo.tramo}</b>`];
-      pushIf(popupLines, "Viaje", tramo.viaje);
-      if (tramo.cluster >= 0) pushIf(popupLines, "Zona", tramo.cluster);
-      if (tramo.sentido) pushIf(popupLines, "Recorrido", tramo.sentido);
-      if (tramo.de && tramo.a) pushIf(popupLines, "Desde / Hacia", `${tramo.de} -> ${tramo.a}`);
-      pushIf(popupLines, "Distancia", `${tramo.dist_km.toFixed(2)} km`);
-      pushIf(popupLines, "Tiempo", formatHoursFromMinutes(tramo.dur_min));
-      if ((tramo.paradas || 0) > 0) pushIf(popupLines, "Clientes atendidos", tramo.paradas);
-      if ((tramo.carga_kg || 0) > 0) pushIf(popupLines, "Carga recolectada", `${tramo.carga_kg.toFixed(2)} kg`);
-      if (tramo.calles) pushIf(popupLines, "Calles", tramo.calles);
-      if ((tramo.oneway_pct || 0) > 0) pushIf(popupLines, "Calles unidireccionales", `${tramo.oneway_pct.toFixed(1)}%`);
-      poly.bindPopup(popupLines.join("<br>"));
-      poly.on("click", () => {
-        selectTruck(String(k));
-      });
-      group.addLayer(poly);
-      allPolys.push(poly);
-      allTramos.push(Object.assign({ camion: k }, tramo));
-      if (!truckRouteCoords[String(k)]) truckRouteCoords[String(k)] = [];
-      truckRouteCoords[String(k)].push(tramo.coords);
-      const viajeKey = String(tramo.viaje);
-      if (!tripsByTruck[String(k)]) tripsByTruck[String(k)] = {};
-      if (!tripsByTruck[String(k)][viajeKey]) {
-        tripsByTruck[String(k)][viajeKey] = {
-          viaje: viajeKey,
-          camion: String(k),
-          cluster: tramo.cluster,
-          dist_km: 0,
-          dur_min: 0,
-          paradas: 0,
-          carga_kg: 0,
-          coords: []
-        };
-      }
-      const trip = tripsByTruck[String(k)][viajeKey];
-      trip.dist_km += tramo.dist_km || 0;
-      trip.dur_min += tramo.dur_min || 0;
-      trip.paradas = Math.max(trip.paradas, tramo.paradas || 0);
-      trip.carga_kg = Math.max(trip.carga_kg || 0, tramo.carga_kg || 0);
-      if (tramo.cluster >= 0) trip.cluster = tramo.cluster;
-      if (tramo.coords && tramo.coords.length >= 2) trip.coords.push(tramo.coords);
-    });
-
-    layerRutas[k] = group;
-  });
-
-  const overlays = { "Clientes (puntos)": layerClientes, "Puntos clave": layerClave };
-  if (CALLES.features && CALLES.features.length > 0) overlays["Calles (base)"] = layerCalles;
-  L.control.layers({ "OSM": osm }, overlays, { collapsed: false }).addTo(map);
-
-  layerClave.addTo(map);
-  layerClientes.addTo(map);
-  Object.keys(layerRutas).forEach(k => {
-    layerRutas[k].addTo(map);
-  });
-
-  if (allPolys.length > 0) {
-    const group = L.featureGroup(allPolys);
-    map.fitBounds(group.getBounds().pad(0.08));
-  }
-
-  function setStats() {
-    const resumenes = Object.values(RUTAS).map(v => v.resumen || {});
-    const totalKm = resumenes.reduce((acc, r) => acc + (r.dist_km || 0), 0);
-    const totalMin = resumenes.reduce((acc, r) => acc + (r.dur_min || 0), 0);
-    const totalTramos = resumenes.reduce((acc, r) => acc + (r.n_tramos || 0), 0);
-    document.getElementById("statCamiones").textContent = resumenes.length;
-    document.getElementById("statTramos").textContent = totalTramos;
-    document.getElementById("statKm").textContent = `${totalKm.toFixed(1)} km`;
-    document.getElementById("statHoras").textContent = formatHoursFromMinutes(totalMin, 1);
-  }
-
-  function renderStepList() {
-    const el = document.getElementById("stepList");
-    const top = allTramos.slice().sort((a, b) => (b.dist_km || 0) - (a.dist_km || 0)).slice(0, 8);
-    el.innerHTML = top.map(t => `
-      <div class="step-item" data-truck-id="${t.camion}" style="cursor:pointer;">
-        <strong>Camion ${t.camion}</strong> · ${t.tramo}<br>
-        ${t.sentido}<br>
-        ${t.dist_km.toFixed(2)} km · ${formatHoursFromMinutes(t.dur_min)}<br>
-        <span class="small">${t.calles || "Sin detalle de calles"}</span>
-      </div>
-    `).join("");
-    el.querySelectorAll("[data-truck-id]").forEach(node => {
-      node.addEventListener("click", () => highlightTruck(node.getAttribute("data-truck-id")));
-    });
-  }
-
-  function updateStatusBar(msg) {
-    const el = document.getElementById("statusBar");
-    if (el) el.textContent = msg;
-  }
-
-  function updateRouteFocus(msg) {
-    const el = document.getElementById("routeFocus");
-    if (el) el.innerHTML = msg;
-  }
-
-  function renderQuickSelector() {
-    const el = document.getElementById("quickSelector");
-    const ids = Object.keys(RUTAS).sort((a, b) => Number(a) - Number(b));
-    el.innerHTML = ids.map(id => `
-      <button class="truck-chip" data-truck-id="${id}" style="background:#fffdf8;">
-        Camion ${id}
-      </button>
-    `).join("");
-    el.querySelectorAll("[data-truck-id]").forEach(node => {
-      const id = node.getAttribute("data-truck-id");
-      node.style.borderColor = colores[id] || "#3f2d17";
-      node.addEventListener("click", () => {
-        selectTruck(id);
-      });
-    });
-  }
-
-  function refreshQuickSelector() {
-    document.querySelectorAll(".truck-chip").forEach(node => {
-      const id = node.getAttribute("data-truck-id");
-      const visible = visibleRouteIds.has(id);
-      const selected = activeTruckId === id;
-      node.classList.toggle("active", selected);
-      node.style.background = selected ? (colores[id] || "#3f2d17") : "#fffdf8";
-      node.style.color = selected ? "white" : "#3f2d17";
-      node.style.opacity = visible ? "1" : "0.45";
-    });
-  }
-
-  function renderTripList(truckId) {
-    const el = document.getElementById("tripList");
-    const trips = truckId && tripsByTruck[truckId]
-      ? Object.values(tripsByTruck[truckId]).sort((a, b) => {
-          const va = a.viaje === "FIN" ? Number.POSITIVE_INFINITY : Number(a.viaje);
-          const vb = b.viaje === "FIN" ? Number.POSITIVE_INFINITY : Number(b.viaje);
-          return va - vb;
-        })
-      : [];
-
-    if (!truckId || trips.length === 0) {
-      el.innerHTML = `<div class="trip-item">Selecciona un camion para navegar visualmente viaje por viaje.</div>`;
-      return;
-    }
-
-    el.innerHTML = trips.map(t => {
-      const summary = [`${t.dist_km.toFixed(2)} km`, formatHoursFromMinutes(t.dur_min)];
-      if ((t.paradas || 0) > 0) summary.push(`${t.paradas} clientes`);
-      if ((t.carga_kg || 0) > 0) summary.push(`${t.carga_kg.toFixed(2)} kg`);
-      const zoneLine = t.cluster >= 0 ? ` · Zona ${t.cluster}` : "";
-      return `
-      <div class="trip-item ${activeTripKey === `${truckId}:${t.viaje}` ? "active" : ""}" data-trip-key="${truckId}:${t.viaje}">
-        <strong>Viaje ${t.viaje}</strong>${zoneLine}<br>
-        ${summary.join(" · ")}
-      </div>
-    `;
-    }).join("");
-
-    el.querySelectorAll("[data-trip-key]").forEach(node => {
-      node.addEventListener("click", () => {
-        const key = node.getAttribute("data-trip-key");
-        const [camionId, viajeId] = key.split(":");
-        highlightTrip(camionId, viajeId);
-      });
-    });
-  }
-
-  setStats();
-  renderTripList(null);
-  renderQuickSelector();
-
-  function haversineMeters(a, b) {
-    const R = 6371000;
-    const toRad = x => x * Math.PI / 180;
-    const dLat = toRad(b[0] - a[0]);
-    const dLon = toRad(b[1] - a[1]);
-    const lat1 = toRad(a[0]);
-    const lat2 = toRad(b[0]);
-    const s1 = Math.sin(dLat / 2), s2 = Math.sin(dLon / 2);
-    const h = s1 * s1 + Math.cos(lat1) * Math.cos(lat2) * s2 * s2;
-    return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
-  }
-
-  function buildCumulativeDistances(coords) {
-    const cum = [0];
-    for (let i = 1; i < coords.length; i++) {
-      cum.push(cum[i - 1] + haversineMeters(coords[i - 1], coords[i]));
-    }
-    return cum;
-  }
-
-  function interpolateAlong(coords, cumDist, dist) {
-    if (coords.length < 2) return coords[0] || null;
-    const total = cumDist[cumDist.length - 1];
-    if (dist <= 0) return coords[0];
-    if (dist >= total) return coords[coords.length - 1];
-    let i = 1;
-    while (i < cumDist.length && cumDist[i] < dist) i++;
-    const d0 = cumDist[i - 1], d1 = cumDist[i];
-    const t = (dist - d0) / (d1 - d0 + 1e-9);
-    const a = coords[i - 1], b = coords[i];
-    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
-  }
-
-  const trucks = [];
-  const truckById = {};
-  const visibleRouteIds = new Set(Object.keys(RUTAS));
-  const highlightLayer = L.layerGroup().addTo(map);
-  const directionLayer = L.layerGroup().addTo(map);
-  Object.keys(RUTAS).forEach(k => {
-    const coords = (RUTAS[k] && RUTAS[k].coords) ? RUTAS[k].coords : [];
-    if (!coords || coords.length < 2) return;
-    const icon = L.divIcon({
-      className: '',
-      html: `<div class="truck-icon">🚚</div>`,
-      iconSize: [24, 24],
-      iconAnchor: [12, 12]
-    });
-    const marker = L.marker(coords[0], { icon }).addTo(map);
-    marker.on("click", () => selectTruck(String(k)));
-    const truck = { id: String(k), coords, cum: buildCumulativeDistances(coords), dist: 0, marker };
-    trucks.push(truck);
-    truckById[String(k)] = truck;
-  });
-
-  const tripHighlightLayer = L.layerGroup().addTo(map);
-
-  function setTruckVisibility(truckId, visible) {
-    const routeLayer = layerRutas[truckId];
-    if (!routeLayer) return;
-    if (visible) {
-      visibleRouteIds.add(String(truckId));
-      if (!map.hasLayer(routeLayer)) map.addLayer(routeLayer);
-    } else {
-      visibleRouteIds.delete(String(truckId));
-      if (map.hasLayer(routeLayer)) map.removeLayer(routeLayer);
-    }
-    syncTruckVisibility();
-  }
-
-  function drawDirectionForTramos(tramos, color) {
-    directionLayer.clearLayers();
-  }
-
-  function selectTruck(truckId) {
-    const id = String(truckId);
-    Object.keys(RUTAS).forEach(k => setTruckVisibility(k, String(k) === id));
-    highlightTruck(id);
-    updateStatusBar(`Mostrando solo Camion ${id}. Usa 'Mostrar todos' para volver a ver toda la flota.`);
-  }
-
-  function highlightTruck(truckId) {
-    activeTruckId = String(truckId);
-    activeTripKey = null;
-    highlightLayer.clearLayers();
-    tripHighlightLayer.clearLayers();
-    directionLayer.clearLayers();
-    const segmentos = truckRouteCoords[activeTruckId] || [];
-    segmentos.forEach(coords => {
-      if (coords && coords.length >= 2) {
-        L.polyline(coords, {
-          color: "#facc15",
-          weight: 10,
-          opacity: 0.40,
-          lineCap: "round",
-          lineJoin: "round"
-        }).addTo(highlightLayer);
-      }
-    });
-    const tramosActivos = allTramos.filter(t => String(t.camion) === activeTruckId);
-    drawDirectionForTramos(tramosActivos, colores[activeTruckId] || "#111827");
-    const resumen = (RUTAS[activeTruckId] && RUTAS[activeTruckId].resumen) ? RUTAS[activeTruckId].resumen : null;
-    if (resumen) {
-      updateRouteFocus(
-        `<b>Camion ${activeTruckId} seleccionado</b><br>` +
-        `Distancia total: ${resumen.dist_km.toFixed(1)} km<br>` +
-        `Tiempo total: ${formatHoursFromMinutes(resumen.dur_min, 2)}<br>` +
-        `Tramos: ${resumen.n_tramos}`
-      );
-    }
-    refreshQuickSelector();
-    renderTripList(activeTruckId);
-  }
-
-  function highlightTrip(truckId, viajeId) {
-    selectTruck(truckId);
-    activeTripKey = `${truckId}:${viajeId}`;
-    tripHighlightLayer.clearLayers();
-    directionLayer.clearLayers();
-    const trip = tripsByTruck[String(truckId)] ? tripsByTruck[String(truckId)][String(viajeId)] : null;
-    if (!trip) return;
-    const tripTramos = allTramos.filter(t => String(t.camion) === String(truckId) && String(t.viaje) === String(viajeId));
-    (trip.coords || []).forEach(coords => {
-      if (coords && coords.length >= 2) {
-        L.polyline(coords, {
-          color: "#0f172a",
-          weight: 7,
-          opacity: 0.9,
-          lineCap: "round",
-          lineJoin: "round"
-        }).addTo(tripHighlightLayer);
-      }
-    });
-    drawDirectionForTramos(tripTramos, colores[String(truckId)] || "#111827");
-    const tripFocus = [`<b>Camion ${truckId} · Viaje ${viajeId}</b>`];
-    if (trip.cluster >= 0) tripFocus.push(`Zona: ${trip.cluster}`);
-    tripFocus.push(`Distancia: ${trip.dist_km.toFixed(2)} km`);
-    tripFocus.push(`Tiempo: ${formatHoursFromMinutes(trip.dur_min, 2)}`);
-    if ((trip.paradas || 0) > 0) tripFocus.push(`Clientes atendidos: ${trip.paradas}`);
-    if ((trip.carga_kg || 0) > 0) tripFocus.push(`Carga recolectada: ${trip.carga_kg.toFixed(2)} kg`);
-    updateRouteFocus(tripFocus.join("<br>"));
-    renderTripList(String(truckId));
-  }
-
-  function syncTruckVisibility() {
-    trucks.forEach(t => {
-      const visible = visibleRouteIds.has(String(t.id));
-      if (visible) {
-        if (!map.hasLayer(t.marker)) t.marker.addTo(map);
-      } else if (map.hasLayer(t.marker)) {
-        map.removeLayer(t.marker);
-      }
-    });
-    const visibles = Array.from(visibleRouteIds).sort((a, b) => Number(a) - Number(b));
-    updateStatusBar(
-      visibles.length > 0
-        ? `Camiones visibles en animacion: ${visibles.join(", ")}`
-        : "No hay rutas visibles. Activa al menos una ruta para reproducir."
-    );
-    if (activeTruckId && !visibleRouteIds.has(activeTruckId)) {
-      activeTruckId = null;
-      activeTripKey = null;
-      highlightLayer.clearLayers();
-      tripHighlightLayer.clearLayers();
-      directionLayer.clearLayers();
-      updateRouteFocus("Selecciona un camion para ver solo su ruta y explorar sus viajes.");
-      renderTripList(null);
-    }
-    refreshQuickSelector();
-  }
-
-  syncTruckVisibility();
-
-  document.getElementById("btnShowAll").addEventListener("click", () => {
-    Object.keys(RUTAS).forEach(k => setTruckVisibility(k, true));
-    activeTruckId = null;
-    activeTripKey = null;
-    highlightLayer.clearLayers();
-    tripHighlightLayer.clearLayers();
-    directionLayer.clearLayers();
-    updateRouteFocus("Vista general activa. Selecciona un camion para enfocarlo.");
-    renderTripList(null);
-    refreshQuickSelector();
-    updateStatusBar("Mostrando todos los camiones.");
-  });
-
-  let running = false;
-  let lastT = null;
-  const BASE_MPS = 40.0;
-
-  function getSpeedFactor() {
-    return parseFloat(document.getElementById("speed").value || "1");
-  }
-
-  function tick(ts) {
-    if (!running) return;
-    if (!lastT) lastT = ts;
-    const dt = (ts - lastT) / 1000.0;
-    lastT = ts;
-    const step = BASE_MPS * getSpeedFactor() * dt;
-    trucks.forEach(t => {
-      if (!visibleRouteIds.has(String(t.id))) return;
-      t.dist += step;
-      const total = t.cum[t.cum.length - 1];
-      if (t.dist > total) t.dist = total;
-      const pos = interpolateAlong(t.coords, t.cum, t.dist);
-      if (pos) t.marker.setLatLng(pos);
-    });
-    requestAnimationFrame(tick);
-  }
-
-  const speed = document.getElementById("speed");
-  const speedVal = document.getElementById("speedVal");
-  speed.addEventListener("input", () => {
-    speedVal.textContent = `${speed.value}x`;
-  });
-
-  document.getElementById("btnPlay").addEventListener("click", () => {
-    if (visibleRouteIds.size === 0) {
-      updateStatusBar("No hay rutas visibles. Usa 'Mostrar todos' o selecciona un camion para reproducir.");
-      return;
-    }
-    if (!running) {
-      running = true;
-      lastT = null;
-      syncTruckVisibility();
-      updateStatusBar(`Reproduciendo camiones visibles: ${Array.from(visibleRouteIds).sort((a, b) => Number(a) - Number(b)).join(", ")}`);
-      requestAnimationFrame(tick);
-    }
-  });
-  document.getElementById("btnPause").addEventListener("click", () => {
-    running = false;
-    updateStatusBar("Animacion en pausa.");
-  });
-  document.getElementById("btnReset").addEventListener("click", () => {
-    running = false;
-    lastT = null;
-    trucks.forEach(t => {
-      t.dist = 0;
-      t.marker.setLatLng(t.coords[0]);
-    });
-    syncTruckVisibility();
-    updateStatusBar("Animacion reiniciada.");
-  });
-</script>
-</body>
-</html>
-"""
-
 # Inyectar datos en el template
 html = html.replace("__CLIENTES__", json.dumps(clientes_geojson))
 html = html.replace("__CLAVE__", json.dumps(clave_geojson))
 html = html.replace("__CALLES__", json.dumps(calles_geojson))
 html = html.replace("__RUTAS__", json.dumps(rutas_camiones))
+html = html.replace("__METRICAS__", json.dumps(metricas_html))
 html = html.replace("__CENTRO_LAT__", str(centro_lat))
 html = html.replace("__CENTRO_LON__", str(centro_lon))
 
@@ -3194,14 +2500,13 @@ def gini_coefficient(x):
     g = (n + 1 - 2 * np.sum(cum) / cum[-1]) / n
     return float(g)
 
-print("📊 Generando KPIs para ejecución local...")
+print("📊 Generando KPIs (modo Colab)...")
 
 # =========================================================
 # 0) Dataframe por NODO (basura + densidad si existe CELDA 7)
 # =========================================================
 df_nodos = pd.DataFrame({
     "id_nodo": [int(n) for n in nodos_clientes],
-    "cluster_id": [int(mapa_clusteres.get(int(n), -1)) for n in nodos_clientes],
     "demanda_kg": [safe_float(dict_demandas.get(n, 0.0)) for n in nodos_clientes]
 })
 
@@ -3235,8 +2540,9 @@ for c in camiones:
 
         t_aprox = safe_float(costos.get("aprox_s", np.nan))
         t_int   = safe_float(costos.get("interno_s", np.nan))
+        t_espera = safe_float(costos.get("espera_desalojo_s", 0.0))
         t_desc  = safe_float(costos.get("descarga_s", np.nan))
-        t_total = np.nansum([t_aprox, t_int, t_desc])
+        t_total = np.nansum([t_aprox, t_int, t_espera, t_desc])
 
         d_aprox = safe_float(dist.get("aprox_m", np.nan))
         d_recol = safe_float(dist.get("recoleccion_m", np.nan))
@@ -3252,6 +2558,7 @@ for c in camiones:
 
             "t_aprox_min": t_aprox/60 if np.isfinite(t_aprox) else np.nan,
             "t_recol_min": t_int/60   if np.isfinite(t_int)   else np.nan,
+            "t_espera_desalojo_min": t_espera/60 if np.isfinite(t_espera) else np.nan,
             "t_desc_min":  t_desc/60  if np.isfinite(t_desc)  else np.nan,
             "t_total_min": t_total/60 if np.isfinite(t_total) else np.nan,
 
@@ -3292,6 +2599,9 @@ if len(df_viajes) > 0:
 
 df_camiones["uso_jornada_pct"] = 100 * (df_camiones["tiempo_turno_h"] / HORAS_TRABAJO)
 df_camiones["holgura_min"] = (HORAS_TRABAJO - df_camiones["tiempo_turno_h"]) * 60
+
+df_viajes.to_csv("kpi_viajes.csv", index=False, encoding="utf-8-sig")
+df_camiones.sort_values("camion").to_csv("kpi_camiones.csv", index=False, encoding="utf-8-sig")
 
 # =========================================================
 # 3) KPIs GLOBALES
@@ -3334,44 +2644,33 @@ else:
 print("\n======================")
 print("🚛 KPI POR CAMIÓN")
 print("======================")
-df_camiones_out = df_camiones.sort_values("camion").round(2)
-print(df_camiones_out.to_string(index=False))
+display(
+    df_camiones.sort_values("camion").round(2)
+)
 
 print("\n======================")
 print("🧾 KPI POR VIAJE (top 20 más largos por tiempo)")
 print("======================")
 if len(df_viajes) > 0:
-    df_viajes_out = df_viajes.sort_values("t_total_min", ascending=False).head(20).round(2)
-    print(df_viajes_out.to_string(index=False))
+    display(
+        df_viajes.sort_values("t_total_min", ascending=False).head(20).round(2)
+    )
 else:
     print("No hay viajes en df_viajes.")
-    df_viajes_out = df_viajes.copy()
 
 print("\n======================")
 print("🔥 Hotspots por basura (top 15 nodos)")
 print("======================")
-df_hotspots_basura = df_nodos.sort_values("demanda_kg", ascending=False).head(15).round(2)
-print(df_hotspots_basura.to_string(index=False))
+display(df_nodos.sort_values("demanda_kg", ascending=False).head(15))
 
 if hay_densidad:
     print("\n======================")
     print("🏙️ Hotspots por densidad poblacional (top 15 nodos)")
     print("======================")
-    df_hotspots_densidad = df_nodos.sort_values("densidad_pob_km2", ascending=False).head(15).round(2)
-    print(df_hotspots_densidad.to_string(index=False))
+    display(df_nodos.sort_values("densidad_pob_km2", ascending=False).head(15))
+
+html_salida = Path("rutas_animadas.html").resolve()
+if html_salida.exists():
+    print(f"HTML listo para abrir en local: {html_salida}")
 else:
-    df_hotspots_densidad = pd.DataFrame()
-
-KPI_CAMIONES_CSV = "kpi_camiones.csv"
-KPI_VIAJES_CSV = "kpi_viajes.csv"
-KPI_NODOS_CSV = "kpi_nodos.csv"
-
-df_camiones_out.to_csv(KPI_CAMIONES_CSV, index=False, encoding="utf-8-sig")
-df_viajes.to_csv(KPI_VIAJES_CSV, index=False, encoding="utf-8-sig")
-df_nodos.to_csv(KPI_NODOS_CSV, index=False, encoding="utf-8-sig")
-
-print("\n✅ KPIs exportados:")
-print(f"  - {KPI_CAMIONES_CSV}")
-print(f"  - {KPI_VIAJES_CSV}")
-print(f"  - {KPI_NODOS_CSV}")
-print(f"ℹ️ Visualización lista en local: abre {OUT_HTML} en tu navegador.")
+    print("⚠️ No se encontró rutas_animadas.html al final del proceso.")
