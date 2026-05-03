@@ -2042,61 +2042,170 @@ html = """<!DOCTYPE html>
     :root {
       color-scheme: light;
       --ink: #172033;
-      --muted: #64748b;
-      --line: #d8dee8;
+      --muted: #637083;
+      --line: #d9e0ea;
       --surface: rgba(255,255,255,0.94);
-      --shadow: 0 18px 50px rgba(15, 23, 42, 0.18);
+      --surface-solid: #ffffff;
+      --soft: #f5f7fa;
+      --accent: #0f766e;
+      --accent-2: #2563eb;
+      --shadow: 0 18px 48px rgba(15, 23, 42, 0.16);
     }
-    html, body { height: 100%; margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; color: var(--ink); }
-    #map { width: 100%; height: 100%; background: #eef2f6; }
-    .app-shell { position: absolute; inset: 14px; z-index: 9999; pointer-events: none; display: grid; grid-template-columns: 360px minmax(0, 1fr) 410px; gap: 14px; }
-    .panel { pointer-events: auto; background: var(--surface); border: 1px solid rgba(216,222,232,0.9); box-shadow: var(--shadow); backdrop-filter: blur(14px); }
-    .control-panel { position: absolute; top: 14px; left: 14px; width: 340px; z-index: 9999; border-radius: 8px; padding: 14px; background: var(--surface); border: 1px solid rgba(216,222,232,0.9); box-shadow: var(--shadow); backdrop-filter: blur(14px); }
-    .summary-panel { position: absolute; top: 84px; right: 14px; bottom: 14px; width: 380px; z-index: 9999; border-radius: 8px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
-    .panel-title { font-size: 12px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0 0 4px; }
-    .headline { margin: 0 0 14px; font-size: 21px; line-height: 1.15; letter-spacing: 0; }
-    .row { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
-    .btn { cursor: pointer; border: 1px solid #111827; padding: 9px 11px; border-radius: 6px; background: #111827; color: white; font-weight: 750; font-size: 13px; }
-    .btn.secondary { background: #ffffff; color: #1f2937; border-color: #cbd5e1; }
-    .btn.info { background: #0f766e; border-color: #0f766e; }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; overflow: hidden; font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; color: var(--ink); }
+    #map { width: 100%; height: 100%; background: #edf1f6; }
+    .glass { pointer-events: auto; background: var(--surface); border: 1px solid rgba(217,224,234,0.92); box-shadow: var(--shadow); backdrop-filter: blur(16px); }
+    .topbar { position: absolute; top: 14px; left: 14px; right: 14px; z-index: 9999; height: 60px; border-radius: 8px; display: grid; grid-template-columns: minmax(260px, 1fr) auto auto; align-items: center; gap: 12px; padding: 10px 12px 10px 16px; }
+    .brand { min-width: 0; }
+    .eyebrow { margin: 0; color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    .headline { margin: 2px 0 0; font-size: 20px; line-height: 1.1; font-weight: 850; letter-spacing: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .top-actions, .panel-actions, .row { display: flex; gap: 8px; align-items: center; }
+    .btn { cursor: pointer; border: 1px solid #172033; padding: 9px 11px; border-radius: 6px; background: #172033; color: white; font-weight: 800; font-size: 13px; line-height: 1; }
+    .btn.secondary { background: #fff; color: #172033; border-color: #cbd5e1; }
+    .btn.accent { background: var(--accent); border-color: var(--accent); }
+    .btn.icon { width: 36px; height: 36px; display: grid; place-items: center; padding: 0; }
     .btn:active { transform: translateY(1px); }
+    .shell { position: absolute; top: 88px; left: 14px; right: 14px; bottom: 14px; z-index: 9998; pointer-events: none; display: grid; grid-template-columns: 340px minmax(0, 1fr) 420px; gap: 14px; align-items: start; }
+    .panel { border-radius: 8px; overflow: hidden; transition: transform .22s ease, opacity .22s ease; max-height: calc(100vh - 102px); }
+    .panel.hidden-left { transform: translateX(calc(-100% - 18px)); opacity: 0; pointer-events: none; }
+    .panel.hidden-right { transform: translateX(calc(100% + 18px)); opacity: 0; pointer-events: none; }
+    .panel-head { min-height: 50px; padding: 12px 14px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+    .panel-title { margin: 0; font-size: 12px; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+    .panel-body { padding: 12px 14px 14px; overflow: auto; max-height: calc(100vh - 166px); }
+    .section { border: 1px solid var(--line); border-radius: 8px; background: #fff; margin-bottom: 10px; overflow: hidden; }
+    .section summary { cursor: pointer; list-style: none; padding: 11px 12px; display: flex; justify-content: space-between; align-items: center; font-size: 13px; font-weight: 850; }
+    .section summary::-webkit-details-marker { display: none; }
+    .section summary::after { content: "Ocultar"; color: var(--muted); font-size: 11px; font-weight: 750; }
+    .section:not([open]) summary::after { content: "Mostrar"; }
+    .section-content { border-top: 1px solid var(--line); padding: 10px 12px 12px; }
     .small { font-size: 12px; color: var(--muted); line-height: 1.35; }
-    .metric-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
-    .metric { border: 1px solid var(--line); border-radius: 7px; padding: 10px; background: #fff; min-height: 58px; }
-    .metric .label { display: block; color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
-    .metric .value { display: block; margin-top: 4px; font-size: 20px; line-height: 1; font-weight: 850; }
-    .slider-row { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; }
-    input[type="range"] { width: 100%; accent-color: #0f766e; }
-    .truck-icon { width: 28px; height: 28px; border-radius: 999px; display: grid; place-items: center; background: #fff; border: 2px solid currentColor; box-shadow: 0 4px 12px rgba(15,23,42,.25); font-size: 16px; font-weight: 900; }
-    .summary-head { padding: 16px 16px 12px; border-bottom: 1px solid var(--line); }
-    .summary-body { overflow: auto; padding: 10px 14px 14px; }
+    .metric-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .metric { border: 1px solid var(--line); border-radius: 7px; padding: 10px; background: var(--surface-solid); min-height: 64px; }
+    .metric .label { display: block; color: var(--muted); font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; }
+    .metric .value { display: block; margin-top: 6px; font-size: 21px; line-height: 1; font-weight: 900; }
+    .slider-row { display: grid; grid-template-columns: 66px 1fr 44px; gap: 10px; align-items: center; margin-top: 8px; }
+    input[type="range"] { width: 100%; accent-color: var(--accent); }
+    .truck-icon { width: 30px; height: 30px; border-radius: 999px; display: grid; place-items: center; background: #fff; border: 2px solid currentColor; box-shadow: 0 6px 16px rgba(15,23,42,.25); font-size: 11px; font-weight: 900; }
     .truck-card { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #fff; margin-bottom: 8px; }
     .truck-card.active { border-color: currentColor; box-shadow: inset 4px 0 0 currentColor; }
     .truck-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 10px; }
-    .truck-name { font-weight: 850; font-size: 15px; }
-    .swatch { width: 12px; height: 12px; border-radius: 99px; display: inline-block; margin-right: 8px; vertical-align: -1px; }
-    .pill { border: 1px solid var(--line); border-radius: 999px; padding: 4px 8px; font-size: 11px; color: var(--muted); font-weight: 750; }
+    .truck-name { font-weight: 900; font-size: 15px; }
+    .swatch { width: 11px; height: 11px; border-radius: 99px; display: inline-block; margin-right: 8px; vertical-align: -1px; }
+    .pill { border: 1px solid var(--line); border-radius: 999px; padding: 4px 8px; font-size: 11px; color: var(--muted); font-weight: 800; white-space: nowrap; }
     .stat-line { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-    .stat-line div { background: #f8fafc; border-radius: 6px; padding: 8px; }
+    .stat-line div { background: var(--soft); border-radius: 6px; padding: 8px; min-width: 0; }
     .stat-line b { display: block; font-size: 13px; }
     .stat-line span { color: var(--muted); font-size: 11px; }
     .progress { margin-top: 10px; height: 7px; background: #e2e8f0; border-radius: 99px; overflow: hidden; }
     .progress i { display: block; height: 100%; width: var(--p); background: currentColor; }
-    .routes-title { font-size: 13px; font-weight: 850; margin: 16px 0 8px; }
-    .route-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-    .route-table th { text-align: left; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--line); padding: 7px 4px; }
-    .route-table td { border-bottom: 1px solid #eef2f7; padding: 8px 4px; vertical-align: top; }
+    .route-table-wrap { overflow: auto; max-height: 43vh; border: 1px solid var(--line); border-radius: 8px; }
+    .route-table { width: 100%; border-collapse: collapse; font-size: 12px; background: #fff; }
+    .route-table th { position: sticky; top: 0; background: #fff; text-align: left; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--line); padding: 8px 6px; }
+    .route-table td { border-bottom: 1px solid #eef2f7; padding: 8px 6px; vertical-align: top; }
     .leaflet-control-layers { border-radius: 8px !important; box-shadow: var(--shadow) !important; border: 1px solid var(--line) !important; }
-    .leaflet-top.leaflet-right { right: 408px; top: 14px; }
+    .leaflet-top.leaflet-right { right: 14px; top: 88px; }
+    body.focus-mode .shell, body.focus-mode .topbar { display: none; }
+    .restore-ui { display: none; position: absolute; top: 14px; left: 14px; z-index: 10000; }
+    body.focus-mode .restore-ui { display: block; }
+    .control-panel, .summary-panel { display: none !important; }
     @media (max-width: 980px) {
-      .app-shell { inset: 10px; grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
-      .summary-panel { grid-column: 1; max-height: 42vh; align-self: end; }
-      .control-panel { max-width: 360px; }
+      .topbar { grid-template-columns: 1fr auto; height: auto; }
+      .top-actions { grid-column: 1 / -1; flex-wrap: wrap; }
+      .shell { top: 126px; grid-template-columns: 1fr; overflow: auto; align-items: stretch; }
+      .panel { max-height: 42vh; }
+      .panel-body { max-height: calc(42vh - 50px); }
+      .panel.hidden-left, .panel.hidden-right { display: none; }
+      .leaflet-top.leaflet-right { top: 126px; }
     }
   </style>
 </head>
 <body>
 <div id="map"></div>
+
+<button id="btnRestoreUiPremium" class="btn restore-ui">Mostrar tablero</button>
+
+<header class="glass topbar">
+  <div class="brand">
+    <p class="eyebrow">Operacion urbana</p>
+    <h1 class="headline">Rutas optimizadas de recoleccion</h1>
+  </div>
+  <div class="top-actions">
+    <button id="btnPlayPremium" class="btn accent">Play</button>
+    <button id="btnPausePremium" class="btn secondary">Pausa</button>
+    <button id="btnResetPremium" class="btn secondary">Reiniciar</button>
+  </div>
+  <div class="top-actions">
+    <button id="btnToggleLeftPremium" class="btn secondary">Operacion</button>
+    <button id="btnToggleRightPremium" class="btn secondary">Analisis</button>
+    <button id="btnFocusPremium" class="btn">Solo mapa</button>
+  </div>
+</header>
+
+<main class="shell">
+  <aside id="leftPanelPremium" class="glass panel">
+    <div class="panel-head">
+      <p class="panel-title">Control</p>
+      <button id="btnHideLeftPremium" class="btn icon secondary" title="Ocultar panel">-</button>
+    </div>
+    <div class="panel-body">
+      <details class="section" open>
+        <summary>Animacion</summary>
+        <div class="section-content">
+          <div class="slider-row">
+            <b class="small">Velocidad</b>
+            <input id="speedPremium" type="range" min="0.25" max="6" step="0.25" value="1.5">
+            <span id="speedValPremium" class="small">1.5x</span>
+          </div>
+        </div>
+      </details>
+
+      <details class="section" open>
+        <summary>Indicadores globales</summary>
+        <div class="section-content">
+          <div class="metric-grid" id="globalMetricsPremium"></div>
+        </div>
+      </details>
+
+      <details class="section" open>
+        <summary>Capas</summary>
+        <div class="section-content">
+          <p class="small">Activa u oculta clientes, puntos clave, calles y rutas desde el selector del mapa.</p>
+        </div>
+      </details>
+    </div>
+  </aside>
+
+  <div></div>
+
+  <section id="rightPanelPremium" class="glass panel">
+    <div class="panel-head">
+      <p class="panel-title">Analisis operativo</p>
+      <button id="btnHideRightPremium" class="btn icon secondary" title="Ocultar panel">-</button>
+    </div>
+    <div class="panel-body">
+      <details class="section" open>
+        <summary>Camiones</summary>
+        <div class="section-content">
+          <div id="truckCardsPremium"></div>
+        </div>
+      </details>
+
+      <details class="section">
+        <summary>Detalle de viajes</summary>
+        <div class="section-content">
+          <div class="route-table-wrap">
+            <table class="route-table">
+              <thead>
+                <tr><th>Camion</th><th>Viaje</th><th>Operacion</th><th>Km</th><th>Min</th></tr>
+              </thead>
+              <tbody id="routeRowsPremium"></tbody>
+            </table>
+          </div>
+        </div>
+      </details>
+    </div>
+  </section>
+</main>
 
 <div class="control-panel">
   <p class="panel-title">Operacion urbana</p>
@@ -2219,7 +2328,7 @@ html = """<!DOCTYPE html>
   function renderDashboard() {
     const global = METRICAS.global || {};
     const totalKm = (METRICAS.camiones || []).reduce((acc, c) => acc + (c.distancia_km || 0), 0);
-    const globalBox = document.getElementById("globalMetrics");
+    const globalBox = document.getElementById("globalMetricsPremium");
     if (globalBox) {
       globalBox.innerHTML = [
         metric("Camiones", fmt0.format(global.camiones_usados || 0)),
@@ -2229,7 +2338,7 @@ html = """<!DOCTYPE html>
       ].join("");
     }
 
-    const cards = document.getElementById("truckCards");
+    const cards = document.getElementById("truckCardsPremium");
     if (cards) {
       cards.innerHTML = (METRICAS.camiones || []).map(c => {
         const color = colores[String(c.id)] || "#111827";
@@ -2251,7 +2360,7 @@ html = """<!DOCTYPE html>
       }).join("");
     }
 
-    const rows = document.getElementById("routeRows");
+    const rows = document.getElementById("routeRowsPremium");
     if (rows) {
       rows.innerHTML = (METRICAS.viajes || []).flatMap(v => {
         const c = String(v.camion);
@@ -2260,7 +2369,6 @@ html = """<!DOCTYPE html>
         return [
           `<tr data-camion="${c}">${base}<td>Aproximacion desde ${v.origen}</td><td>${fmt.format(v.aprox_km || 0)}</td><td>${fmt.format(v.aprox_min || 0)}</td></tr>`,
           `<tr data-camion="${c}">${base}<td>Recoleccion (${fmt0.format(v.paradas || 0)} paradas)</td><td>${fmt.format(v.recoleccion_km || 0)}</td><td>${fmt.format(v.recoleccion_min || 0)}</td></tr>`,
-          `<tr data-camion="${c}">${base}<td>Espera desalojo</td><td>0</td><td>${fmt.format(v.espera_desalojo_min || 0)}</td></tr>`,
           `<tr data-camion="${c}">${base}<td>Descarga en relleno</td><td>${fmt.format(v.descarga_km || 0)}</td><td>${fmt.format(v.descarga_min || 0)}</td></tr>`
         ];
       }).join("");
@@ -2280,7 +2388,7 @@ html = """<!DOCTYPE html>
     overlays[`Ruta Camión ${k}`] = layerRutas[k];
   });
 
-  L.control.layers({ "OSM": osm }, overlays, { collapsed: false }).addTo(map);
+  L.control.layers({ "OSM": osm }, overlays, { collapsed: true }).addTo(map);
 
   // Mostrar por defecto
   layerClave.addTo(map);
@@ -2342,6 +2450,7 @@ html = """<!DOCTYPE html>
     const icon = L.divIcon({
       className: '',
       html: `<div class="truck-icon">🚚</div>`,
+      html: `<div class="truck-icon">C${k}</div>`,
       iconSize: [22,22],
       iconAnchor: [11,11]
     });
@@ -2391,7 +2500,7 @@ html = """<!DOCTYPE html>
   let lastT = null;
 
   function getSpeedFactor() {
-    return parseFloat(document.getElementById("speed").value || "1");
+    return parseFloat(document.getElementById("speedPremium").value || "1");
   }
 
   // velocidad base de animación (m/s)
@@ -2418,13 +2527,26 @@ html = """<!DOCTYPE html>
   }
 
   // Controles
-  const speed = document.getElementById("speed");
-  const speedVal = document.getElementById("speedVal");
+  const speed = document.getElementById("speedPremium");
+  const speedVal = document.getElementById("speedValPremium");
   speed.addEventListener("input", () => {
+    speedVal.textContent = `${speed.value}x`;
+    return;
     speedVal.textContent = `${speed.value}×`;
   });
 
-  document.getElementById("btnPlay").addEventListener("click", () => {
+  const leftPanel = document.getElementById("leftPanelPremium");
+  const rightPanel = document.getElementById("rightPanelPremium");
+  const toggleLeftPanel = () => leftPanel.classList.toggle("hidden-left");
+  const toggleRightPanel = () => rightPanel.classList.toggle("hidden-right");
+  document.getElementById("btnToggleLeftPremium").addEventListener("click", toggleLeftPanel);
+  document.getElementById("btnHideLeftPremium").addEventListener("click", toggleLeftPanel);
+  document.getElementById("btnToggleRightPremium").addEventListener("click", toggleRightPanel);
+  document.getElementById("btnHideRightPremium").addEventListener("click", toggleRightPanel);
+  document.getElementById("btnFocusPremium").addEventListener("click", () => document.body.classList.add("focus-mode"));
+  document.getElementById("btnRestoreUiPremium").addEventListener("click", () => document.body.classList.remove("focus-mode"));
+
+  document.getElementById("btnPlayPremium").addEventListener("click", () => {
     if (!running) {
       running = true;
       lastT = null;
@@ -2432,11 +2554,11 @@ html = """<!DOCTYPE html>
     }
   });
 
-  document.getElementById("btnPause").addEventListener("click", () => {
+  document.getElementById("btnPausePremium").addEventListener("click", () => {
     running = false;
   });
 
-  document.getElementById("btnReset").addEventListener("click", () => {
+  document.getElementById("btnResetPremium").addEventListener("click", () => {
     running = false;
     lastT = null;
     trucks.forEach(t => {
