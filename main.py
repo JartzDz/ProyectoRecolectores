@@ -1022,11 +1022,6 @@ print(f"Viajes válidos para asignación: {sum(1 for v in lista_viajes if v.get(
 import numpy as np
 
 HORAS_TRABAJO = 8 * 3600  # 8 horas (s)
-INICIO_JORNADA_S = 6.5 * 3600
-VENTANAS_DESALOJO_S = [
-    (13 * 3600, 17 * 3600, "Tarde 13:00-17:00"),
-    (19 * 3600, 20 * 3600, "Vespertino 19:00"),
-]
 
 # --------------------------
 # Helpers de tiempo (igual)
@@ -1042,14 +1037,6 @@ def D(a, b):
 
 def T(a, b, vel_kmh):
     return tiempo_segundos(D(a, b), vel_kmh)
-
-def siguiente_desalojo_programado_s(t_llegada_s):
-    for inicio, fin, etiqueta in VENTANAS_DESALOJO_S:
-        if t_llegada_s <= inicio:
-            return inicio, etiqueta
-        if inicio <= t_llegada_s <= fin:
-            return t_llegada_s, etiqueta
-    return np.inf, "Sin ventana disponible"
 
 V_DEPOSITO_A_EST = PARAMETROS_OPERATIVOS["velocidad_transito_kmh"]
 t_retorno_casa = T(id_relleno, id_estacion, V_DEPOSITO_A_EST)
@@ -1089,6 +1076,9 @@ def tiempo_viaje_para_camion(viaje, camion):
         return "Relleno",  viaje["tiempo_s"]["si_sale_relleno"],  viaje["dist_tramos_m"]["aprox_desde_relleno"]
 
 def tiempo_viaje_para_camion_programado(viaje, camion):
+    origen, t_base, d_aprox = tiempo_viaje_para_camion(viaje, camion)
+    return origen, t_base, d_aprox, 0.0, "Sin restriccion"
+
     es_primer = (len(camion["viajes"]) == 0)
     if es_primer:
         origen = "Estación"
@@ -2270,8 +2260,8 @@ html = """<!DOCTYPE html>
         return [
           `<tr data-camion="${c}">${base}<td>Aproximacion desde ${v.origen}</td><td>${fmt.format(v.aprox_km || 0)}</td><td>${fmt.format(v.aprox_min || 0)}</td></tr>`,
           `<tr data-camion="${c}">${base}<td>Recoleccion (${fmt0.format(v.paradas || 0)} paradas)</td><td>${fmt.format(v.recoleccion_km || 0)}</td><td>${fmt.format(v.recoleccion_min || 0)}</td></tr>`,
-          `<tr data-camion="${c}">${base}<td>Espera ventana ${v.ventana_desalojo || ""}</td><td>0</td><td>${fmt.format(v.espera_desalojo_min || 0)}</td></tr>`,
-          `<tr data-camion="${c}">${base}<td>Desalojo programado</td><td>${fmt.format(v.descarga_km || 0)}</td><td>${fmt.format(v.descarga_min || 0)}</td></tr>`
+          `<tr data-camion="${c}">${base}<td>Espera desalojo</td><td>0</td><td>${fmt.format(v.espera_desalojo_min || 0)}</td></tr>`,
+          `<tr data-camion="${c}">${base}<td>Descarga en relleno</td><td>${fmt.format(v.descarga_km || 0)}</td><td>${fmt.format(v.descarga_min || 0)}</td></tr>`
         ];
       }).join("");
     }
