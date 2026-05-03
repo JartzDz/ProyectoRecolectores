@@ -1926,6 +1926,33 @@ clientes_geojson = gdf_to_geojson_dict(gdf_clientes)
 clave_geojson    = gdf_to_geojson_dict(gdf_clave)
 calles_geojson   = gdf_to_geojson_dict(gdf_calles) if INCLUIR_CALLES else {"type":"FeatureCollection","features":[]}
 
+sectores_features = []
+if "zonas_hibridas" in globals() and zonas_hibridas:
+    for zona_id, nodos_zona in sorted(zonas_hibridas.items()):
+        puntos = [
+            geom.Point(float(G.nodes[n]["x"]), float(G.nodes[n]["y"]))
+            for n in nodos_zona
+            if n in G.nodes and "x" in G.nodes[n] and "y" in G.nodes[n]
+        ]
+        if not puntos:
+            continue
+        geom_zona = geom.MultiPoint(puntos).convex_hull
+        if geom_zona.geom_type in ("Point", "LineString"):
+            geom_zona = geom_zona.buffer(0.00025)
+        else:
+            geom_zona = geom_zona.buffer(0.00008)
+        sectores_features.append({
+            "type": "Feature",
+            "properties": {
+                "zona": int(zona_id),
+                "clientes": int(len(nodos_zona)),
+                "carga_kg": float(sum(float(dict_demandas.get(n, 0.0)) for n in nodos_zona)),
+            },
+            "geometry": mapping(geom_zona)
+        })
+
+sectores_geojson = {"type": "FeatureCollection", "features": sectores_features}
+
 
 # -----------------------------
 # 2) Leer rutas por camión y convertir a lista de [lat, lon]
@@ -2169,7 +2196,7 @@ html = """<!DOCTYPE html>
       <details class="section" open>
         <summary>Capas</summary>
         <div class="section-content">
-          <p class="small">Activa u oculta clientes, puntos clave, calles y rutas desde el selector del mapa.</p>
+          <p class="small">Sectores iniciales muestra la agrupacion usada para construir viajes. Rutas finales por camion muestra la asignacion operativa ya balanceada.</p>
         </div>
       </details>
     </div>
@@ -2252,6 +2279,7 @@ html = """<!DOCTYPE html>
   const CLIENTES = __CLIENTES__;
   const CLAVE    = __CLAVE__;
   const CALLES   = __CALLES__;
+  const SECTORES = __SECTORES__;
   const RUTAS    = __RUTAS__;
   const METRICAS = __METRICAS__;
 
@@ -2306,6 +2334,23 @@ html = """<!DOCTYPE html>
   });
 
   // Rutas por camión (líneas)
+  const coloresSectores = ["#0f766e", "#2563eb", "#ca8a04", "#7c3aed", "#dc2626", "#0891b2", "#16a34a", "#be185d", "#475569", "#ea580c"];
+  const layerSectores = L.geoJSON(SECTORES, {
+    style: f => {
+      const z = Number((f.properties || {}).zona || 1);
+      const color = coloresSectores[(z - 1) % coloresSectores.length];
+      return { color, weight: 2, opacity: 0.75, fillColor: color, fillOpacity: 0.11, dashArray: "7 5" };
+    },
+    onEachFeature: (f, layer) => {
+      const p = f.properties || {};
+      layer.bindPopup(
+        `<b>Sector inicial ${p.zona || "-"}</b><br>` +
+        `Clientes: ${p.clientes || 0}<br>` +
+        `Carga estimada: ${Number((p.carga_kg || 0) / 1000).toFixed(1)} t`
+      );
+    }
+  });
+
   function polylineFromRuta(rutaLatLon, color) {
     if (!rutaLatLon || rutaLatLon.length < 2) return null;
     return L.polyline(rutaLatLon, { color, weight: 5, opacity: 0.9 });
@@ -2379,6 +2424,7 @@ html = """<!DOCTYPE html>
 
   // Control de capas
   const overlays = {
+    "Sectores iniciales": layerSectores,
     "Clientes (puntos)": layerClientes,
     "Puntos clave": layerClave
   };
@@ -2391,6 +2437,7 @@ html = """<!DOCTYPE html>
   L.control.layers({ "OSM": osm }, overlays, { collapsed: true }).addTo(map);
 
   // Mostrar por defecto
+  layerSectores.addTo(map);
   layerClave.addTo(map);
   layerClientes.addTo(map);
   Object.keys(layerRutas).forEach(k => layerRutas[k].addTo(map));
@@ -2575,6 +2622,7 @@ html = """<!DOCTYPE html>
 html = html.replace("__CLIENTES__", json.dumps(clientes_geojson))
 html = html.replace("__CLAVE__", json.dumps(clave_geojson))
 html = html.replace("__CALLES__", json.dumps(calles_geojson))
+html = html.replace("__SECTORES__", json.dumps(sectores_geojson))
 html = html.replace("__RUTAS__", json.dumps(rutas_camiones))
 html = html.replace("__METRICAS__", json.dumps(metricas_html))
 html = html.replace("__CENTRO_LAT__", str(centro_lat))
