@@ -9,6 +9,26 @@ from shapely.validation import explain_validity
 from pyproj import CRS
 from pathlib import Path
 
+CAPACIDAD_MAXIMA_CAMION_KG = 12000.0
+HORAS_TRABAJO_H = 8.0
+NUMERO_RECOLECTORES_CAMION = 3
+NUMERO_CHOFER_CAMION = 1
+SUELDO_RECOLECTORES_USD = 665.0
+SUELDO_CHOFER_USD = 801.0
+TIEMPO_PARADA_SEG = 30.0
+VELOCIDAD_ACERCAMIENTO_KMH = 50.0
+VELOCIDAD_RECOLECCION_KMH = 10.0
+VELOCIDAD_TRANSPORTE_KMH = 40.0
+VELOCIDAD_RETORNO_KMH = 50.0
+TOTAL_PESO_PESADO_TON = 120.0
+TOTAL_PESO_LIGERO_TON = 60.0
+TOTAL_BASURA_KG = (TOTAL_PESO_PESADO_TON + TOTAL_PESO_LIGERO_TON) * 1000.0
+PRECIO_DIESEL_USD_GAL = 2.99
+RENDIMIENTO_KM_GAL = 4.5
+PESO_BASURA_NODOS_RESTAURANTES = 8.0
+PESO_BASURA_NODOS_TIENDAS = 3.0
+PESO_BASURA_NODOS_OTROS_CLIENTES = 2.0
+
 try:
     from IPython.display import display
 except ImportError:
@@ -26,7 +46,8 @@ except Exception:
     pass
 
 print("1) Cargando grafo...")
-G = ox.load_graphml("grafo_cuenca.graphml")
+G = ox.load_graphml("grafo_actualizado.graphml")
+G_RUTEO = nx.Graph(G)
 print("   -> OK grafo cargado.")
 
 # 0) Validar que exista 'length' (distancia en metros)
@@ -154,7 +175,6 @@ import pandas as pd
 import numpy as np
 import shapely.geometry as geom
 
-TOTAL_BASURA_KG = 57590.0
 print("1) Descargando Puntos de Interés (POIs) de OSM...")
 
 tags = {
@@ -188,14 +208,14 @@ except Exception as e:
 # ---------------------------------------------------------
 # C) Pesos base por nodo (residencial)
 # ---------------------------------------------------------
-pesos_nodos = {nodo: 1.0 for nodo in nodos_clientes}
+pesos_nodos = {nodo: PESO_BASURA_NODOS_OTROS_CLIENTES for nodo in nodos_clientes}
 
 # Ponderaciones
-w_comida  = 8.0
-w_tienda  = 3.0
-w_hotel   = 5.0
-w_escuela = 4.0
-w_normal  = 2.0
+w_comida  = PESO_BASURA_NODOS_RESTAURANTES
+w_tienda  = PESO_BASURA_NODOS_TIENDAS
+w_hotel   = PESO_BASURA_NODOS_TIENDAS
+w_escuela = PESO_BASURA_NODOS_OTROS_CLIENTES
+w_normal  = PESO_BASURA_NODOS_OTROS_CLIENTES
 
 # ---------------------------------------------------------
 # D) Aumentar peso si hay negocio cerca
@@ -299,13 +319,13 @@ import networkx as nx
 # -----------------------------
 # Velocidades del escenario (km/h)
 # -----------------------------
-V_ESTACION_A_PRIMERO = 40.0
-V_RECOLECCION        = 10.0
-V_ULTIMO_A_DEPOSITO  = 30.0
-V_DEPOSITO_A_EST     = 40.0
+V_ESTACION_A_PRIMERO = VELOCIDAD_ACERCAMIENTO_KMH
+V_RECOLECCION        = VELOCIDAD_RECOLECCION_KMH
+V_ULTIMO_A_DEPOSITO  = VELOCIDAD_TRANSPORTE_KMH
+V_DEPOSITO_A_EST     = VELOCIDAD_RETORNO_KMH
 
 # (Debe coincidir con CELDA 6)
-TIEMPO_RECOLECCION_POR_NODO = 60  # segundos
+TIEMPO_RECOLECCION_POR_NODO = TIEMPO_PARADA_SEG  # segundos
 
 def vel_mps(vel_kmh: float) -> float:
     return vel_kmh * 1000.0 / 3600.0
@@ -328,7 +348,7 @@ lista_lugares = [estacion, deposito] + clientes
 n = len(lista_lugares)
 idx = {node: i for i, node in enumerate(lista_lugares)}
 
-print(f"Calculando matriz de DISTANCIAS por calles entre {n} puntos (weight='length')...")
+print(f"Calculando matriz de DISTANCIAS por calles entre {n} puntos (weight='length', grafo no dirigido)...")
 
 # -----------------------------
 # 2) Matriz de distancias mínimas (m) por OSM
@@ -336,7 +356,7 @@ print(f"Calculando matriz de DISTANCIAS por calles entre {n} puntos (weight='len
 dist_m = np.full((n, n), np.inf, dtype=float)
 
 for k, origen in enumerate(lista_lugares, 1):
-    d = nx.single_source_dijkstra_path_length(G, origen, weight="length")
+    d = nx.single_source_dijkstra_path_length(G_RUTEO, origen, weight="length")
     i = idx[origen]
     for destino, j in idx.items():
         dist_m[i, j] = d.get(destino, np.inf)
@@ -431,11 +451,11 @@ print(f"\nRetorno final (Depósito->Estación, 40): {t_fin/60:.2f} min")
 import numpy as np
 
 # (Debe coincidir con CELDA 3 / CELDA 6)
-V_ESTACION_A_PRIMERO = 40.0
-V_RECOLECCION        = 10.0
-V_ULTIMO_A_DEPOSITO  = 30.0
-V_DEPOSITO_A_EST     = 40.0
-TIEMPO_RECOLECCION_POR_NODO = 60  # s
+V_ESTACION_A_PRIMERO = VELOCIDAD_ACERCAMIENTO_KMH
+V_RECOLECCION        = VELOCIDAD_RECOLECCION_KMH
+V_ULTIMO_A_DEPOSITO  = VELOCIDAD_TRANSPORTE_KMH
+V_DEPOSITO_A_EST     = VELOCIDAD_RETORNO_KMH
+TIEMPO_RECOLECCION_POR_NODO = TIEMPO_PARADA_SEG  # s
 
 def tiempo_segundos(dist_m, vel_kmh):
     if dist_m is None or not np.isfinite(dist_m):
@@ -561,11 +581,11 @@ print("Funciones C&W (distancia) compiladas y tiempos alineados con CELDA 6 ✅"
 import numpy as np
 
 # (Debe coincidir con CELDA 3 / CELDA 6)
-V_ESTACION_A_PRIMERO = 40.0
-V_RECOLECCION        = 10.0
-V_ULTIMO_A_DEPOSITO  = 30.0
-V_DEPOSITO_A_EST     = 40.0
-TIEMPO_RECOLECCION_POR_NODO = 60  # s
+V_ESTACION_A_PRIMERO = VELOCIDAD_ACERCAMIENTO_KMH
+V_RECOLECCION        = VELOCIDAD_RECOLECCION_KMH
+V_ULTIMO_A_DEPOSITO  = VELOCIDAD_TRANSPORTE_KMH
+V_DEPOSITO_A_EST     = VELOCIDAD_RETORNO_KMH
+TIEMPO_RECOLECCION_POR_NODO = TIEMPO_PARADA_SEG  # s
 
 def tiempo_segundos(dist_m, vel_kmh):
     if dist_m is None or not np.isfinite(dist_m):
@@ -692,14 +712,20 @@ print("Funciones C&W (distancia) compiladas y tiempos alineados con CELDA 6 ✅"
 # ---------------------------------------------------------
 PARAMETROS_OPERATIVOS = {
     "num_vehiculos": 15,
-    "capacidad_max_kg": 11000.0,
-    "capacidad_min_kg": 9000.0,
-    "velocidad_recoleccion_kmh": 12.5,
-    "velocidad_transito_kmh": 50.0,
-    "personas_por_camion": 5,
-    "choferes": 1,
-    "obreros": 4,
+    "capacidad_max_kg": CAPACIDAD_MAXIMA_CAMION_KG,
+    "capacidad_min_kg": 0.0,
+    "velocidad_acercamiento_kmh": VELOCIDAD_ACERCAMIENTO_KMH,
+    "velocidad_recoleccion_kmh": VELOCIDAD_RECOLECCION_KMH,
+    "velocidad_transporte_kmh": VELOCIDAD_TRANSPORTE_KMH,
+    "velocidad_retorno_kmh": VELOCIDAD_RETORNO_KMH,
+    "personas_por_camion": NUMERO_RECOLECTORES_CAMION + NUMERO_CHOFER_CAMION,
+    "choferes": NUMERO_CHOFER_CAMION,
+    "obreros": NUMERO_RECOLECTORES_CAMION,
     "obreros_min": 3,
+    "sueldo_recolector_usd": SUELDO_RECOLECTORES_USD,
+    "sueldo_chofer_usd": SUELDO_CHOFER_USD,
+    "precio_diesel_usd_gal": PRECIO_DIESEL_USD_GAL,
+    "rendimiento_km_gal": RENDIMIENTO_KM_GAL,
     "horario_inicio": "06:00",
     "horario_fin": "24:00",
     "almuerzo_inicio": "13:00",
@@ -729,10 +755,10 @@ PARAMETROS_OPERATIVOS = {
 NUM_VEHICULOS = PARAMETROS_OPERATIVOS["num_vehiculos"]
 CAPACIDAD_MAXIMA_KG = float(globals().get("CAPACIDAD_MAXIMA_KG", PARAMETROS_OPERATIVOS["capacidad_max_kg"]))
 CAPACIDAD_MINIMA_KG = PARAMETROS_OPERATIVOS["capacidad_min_kg"]
-V_ESTACION_A_PRIMERO = PARAMETROS_OPERATIVOS["velocidad_transito_kmh"]
+V_ESTACION_A_PRIMERO = PARAMETROS_OPERATIVOS["velocidad_acercamiento_kmh"]
 V_RECOLECCION = PARAMETROS_OPERATIVOS["velocidad_recoleccion_kmh"]
-V_ULTIMO_A_DEPOSITO = PARAMETROS_OPERATIVOS["velocidad_transito_kmh"]
-V_DEPOSITO_A_EST = PARAMETROS_OPERATIVOS["velocidad_transito_kmh"]
+V_ULTIMO_A_DEPOSITO = PARAMETROS_OPERATIVOS["velocidad_transporte_kmh"]
+V_DEPOSITO_A_EST = PARAMETROS_OPERATIVOS["velocidad_retorno_kmh"]
 PESO_AHORRO_DIST = 0.60
 PESO_AHORRO_TIEMPO = 0.40
 
@@ -1021,7 +1047,7 @@ print(f"Viajes válidos para asignación: {sum(1 for v in lista_viajes if v.get(
 # CELDA 6 (V2.2): Asignación de Viajes BALANCEADA (Best-Fit Decreasing)
 import numpy as np
 
-HORAS_TRABAJO = 8 * 3600  # 8 horas (s)
+HORAS_TRABAJO = HORAS_TRABAJO_H * 3600  # segundos
 
 # --------------------------
 # Helpers de tiempo (igual)
@@ -1038,7 +1064,7 @@ def D(a, b):
 def T(a, b, vel_kmh):
     return tiempo_segundos(D(a, b), vel_kmh)
 
-V_DEPOSITO_A_EST = PARAMETROS_OPERATIVOS["velocidad_transito_kmh"]
+V_DEPOSITO_A_EST = PARAMETROS_OPERATIVOS["velocidad_retorno_kmh"]
 t_retorno_casa = T(id_relleno, id_estacion, V_DEPOSITO_A_EST)
 print(f"Tiempo de seguridad (Relleno -> Estación): {t_retorno_casa/60:.2f} min")
 
@@ -1355,6 +1381,8 @@ def best_edge_attr(G, u, v, attr, default=0.0):
     if data is None:
         return default
     if isinstance(data, dict):  # MultiDiGraph
+        if not all(isinstance(attrs, dict) for attrs in data.values()):
+            return float(data.get(attr, default))
         best = None
         for _, attrs in data.items():
             val = float(attrs.get(attr, default))
@@ -1440,8 +1468,8 @@ for n in nodos_clientes:
     data_clientes.append({
         "id_nodo": n_int,
         "demanda_kg": round(demanda, 2),
-        "dist_a_estacion_m": dist_ruteada_m(G, id_estacion, n),
-        "dist_a_relleno_m": dist_ruteada_m(G, n, id_relleno),
+        "dist_a_estacion_m": dist_ruteada_m(G_RUTEO, id_estacion, n),
+        "dist_a_relleno_m": dist_ruteada_m(G_RUTEO, n, id_relleno),
         "geometry": Point(G.nodes[n]['x'], G.nodes[n]['y'])
     })
 
@@ -1504,8 +1532,8 @@ for camion in camiones:
             de_aprox = "Estacion" if origen_nodo == id_estacion else "Relleno"
 
         try:
-            path = nx.shortest_path(G, origen_nodo, primer, weight="travel_time")
-            geom_line = path_to_linestring(G, path)
+            path = nx.shortest_path(G_RUTEO, origen_nodo, primer, weight="travel_time")
+            geom_line = path_to_linestring(G_RUTEO, path)
             if geom_line is not None:
                 features.append({
                     "Camion": c_id,
@@ -1514,7 +1542,7 @@ for camion in camiones:
                     "De": de_aprox,
                     "A": "Recolección",
                     "dur_s": float(viaje["costos"]["aprox_s"]),
-                    "dist_m": path_dist_m(G, path),
+                    "dist_m": path_dist_m(G_RUTEO, path),
                     "orden": orden_local,
                     "geometry": geom_line
                 })
@@ -1526,14 +1554,14 @@ for camion in camiones:
         coords_recol = []
         try:
             for k in range(len(nodos_ruta) - 1):
-                seg = nx.shortest_path(G, nodos_ruta[k], nodos_ruta[k+1], weight="travel_time")
+                seg = nx.shortest_path(G_RUTEO, nodos_ruta[k], nodos_ruta[k+1], weight="travel_time")
                 if k == 0:
-                    coords_recol += [(G.nodes[n]['x'], G.nodes[n]['y']) for n in seg]
+                    coords_recol += [(G_RUTEO.nodes[n]['x'], G_RUTEO.nodes[n]['y']) for n in seg]
                 else:
-                    coords_recol += [(G.nodes[n]['x'], G.nodes[n]['y']) for n in seg[1:]]
+                    coords_recol += [(G_RUTEO.nodes[n]['x'], G_RUTEO.nodes[n]['y']) for n in seg[1:]]
 
             if len(coords_recol) >= 2:
-                dist_recol = dist_recoleccion_m(G, nodos_ruta)
+                dist_recol = dist_recoleccion_m(G_RUTEO, nodos_ruta)
 
                 features.append({
                     "Camion": c_id,
@@ -1552,8 +1580,8 @@ for camion in camiones:
 
         # TRAMO 3: DESCARGA
         try:
-            path = nx.shortest_path(G, ultimo, id_relleno, weight="travel_time")
-            geom_line = path_to_linestring(G, path)
+            path = nx.shortest_path(G_RUTEO, ultimo, id_relleno, weight="travel_time")
+            geom_line = path_to_linestring(G_RUTEO, path)
             if geom_line is not None:
                 features.append({
                     "Camion": c_id,
@@ -1562,7 +1590,7 @@ for camion in camiones:
                     "De": "Recolección",
                     "A": "Relleno",
                     "dur_s": float(viaje["costos"]["descarga_s"]),
-                    "dist_m": path_dist_m(G, path),
+                    "dist_m": path_dist_m(G_RUTEO, path),
                     "orden": orden_local,
                     "geometry": geom_line
                 })
@@ -1572,10 +1600,10 @@ for camion in camiones:
 
     # FIN DEL TURNO
     try:
-        path = nx.shortest_path(G, id_relleno, id_estacion, weight="travel_time")
-        geom_line = path_to_linestring(G, path)
+        path = nx.shortest_path(G_RUTEO, id_relleno, id_estacion, weight="travel_time")
+        geom_line = path_to_linestring(G_RUTEO, path)
         if geom_line is not None:
-            dur_fin = float(globals().get("t_retorno_casa", path_time_s(G, path)))
+            dur_fin = float(globals().get("t_retorno_casa", path_time_s(G_RUTEO, path)))
 
             features.append({
                 "Camion": c_id,
@@ -1584,7 +1612,7 @@ for camion in camiones:
                 "De": "Relleno",
                 "A": "Estación",
                 "dur_s": dur_fin,
-                "dist_m": path_dist_m(G, path),
+                "dist_m": path_dist_m(G_RUTEO, path),
                 "orden": orden_local,
                 "geometry": geom_line
             })
@@ -1626,6 +1654,8 @@ def best_edge_attr(G, u, v, attr, default=0.0):
     if data is None:
         return default
     if isinstance(data, dict):  # MultiDiGraph
+        if not all(isinstance(attrs, dict) for attrs in data.values()):
+            return float(data.get(attr, default))
         best = None
         for _, attrs in data.items():
             val = float(attrs.get(attr, default))
@@ -1695,7 +1725,7 @@ for camion in camiones:
             origen_tipo = "Estacion" if origen_nodo == id_estacion else "Relleno"
 
         t_aprox_s = float(viaje["costos"]["aprox_s"])
-        d_aprox_km = dist_km_ruteada(G, origen_nodo, primer)
+        d_aprox_km = dist_km_ruteada(G_RUTEO, origen_nodo, primer)
 
         filas.append({
             "Camión": c_id,
@@ -1713,7 +1743,7 @@ for camion in camiones:
 
         # TRAMO B: Recolección (operación) + distancia interna
         t_int_s = float(viaje["costos"]["interno_s"])
-        d_recol_km = dist_km_recoleccion(G, nodos)
+        d_recol_km = dist_km_recoleccion(G_RUTEO, nodos)
 
         filas.append({
             "Camión": c_id,
@@ -1731,7 +1761,7 @@ for camion in camiones:
 
         # TRAMO C: Recolección -> Relleno
         t_desc_s = float(viaje["costos"]["descarga_s"])
-        d_desc_km = dist_km_ruteada(G, ultimo, id_relleno)
+        d_desc_km = dist_km_ruteada(G_RUTEO, ultimo, id_relleno)
 
         filas.append({
             "Camión": c_id,
@@ -1748,7 +1778,7 @@ for camion in camiones:
         })
 
     # FIN DE TURNO: Relleno -> Estación
-    d_fin_km = dist_km_ruteada(G, id_relleno, id_estacion)
+    d_fin_km = dist_km_ruteada(G_RUTEO, id_relleno, id_estacion)
 
     filas.append({
         "Camión": c_id,
@@ -1823,8 +1853,8 @@ print(f"Tiempo total flota: {total_h:.2f} h")
 print(f"Paradas totales (recolección): {total_paradas}")
 
 # Opcional: consumo/costo como en el PDF (ajusta a tu supuesto)
-KM_POR_GALON = 5.0
-COSTO_POR_GALON = 2.71
+KM_POR_GALON = RENDIMIENTO_KM_GAL
+COSTO_POR_GALON = PRECIO_DIESEL_USD_GAL
 if total_km > 0 and KM_POR_GALON > 0:
     gal = total_km / KM_POR_GALON
     costo = gal * COSTO_POR_GALON
@@ -2638,8 +2668,8 @@ print("   Ábrelo en tu navegador (doble click).")
 import pandas as pd
 import numpy as np
 
-CAPACIDAD_MAXIMA_KG = float(globals().get("CAPACIDAD_MAXIMA_KG", 9000.0))
-HORAS_TRABAJO = 8.0  # horas
+CAPACIDAD_MAXIMA_KG = float(globals().get("CAPACIDAD_MAXIMA_KG", CAPACIDAD_MAXIMA_CAMION_KG))
+HORAS_TRABAJO = HORAS_TRABAJO_H  # horas
 
 def safe_float(x):
     try:
@@ -2757,8 +2787,17 @@ if len(df_viajes) > 0:
     ).reset_index()
     df_camiones = df_camiones.merge(agg, on="camion", how="left")
 
+if "dist_total_km" not in df_camiones.columns:
+    df_camiones["dist_total_km"] = np.nan
+
 df_camiones["uso_jornada_pct"] = 100 * (df_camiones["tiempo_turno_h"] / HORAS_TRABAJO)
 df_camiones["holgura_min"] = (HORAS_TRABAJO - df_camiones["tiempo_turno_h"]) * 60
+df_camiones["galones_estimados"] = df_camiones["dist_total_km"] / RENDIMIENTO_KM_GAL
+df_camiones["costo_diesel_usd"] = df_camiones["galones_estimados"] * PRECIO_DIESEL_USD_GAL
+df_camiones["costo_nomina_mensual_usd"] = (
+    NUMERO_RECOLECTORES_CAMION * SUELDO_RECOLECTORES_USD
+    + NUMERO_CHOFER_CAMION * SUELDO_CHOFER_USD
+)
 
 df_viajes.to_csv("kpi_viajes.csv", index=False, encoding="utf-8-sig")
 df_camiones.sort_values("camion").to_csv("kpi_camiones.csv", index=False, encoding="utf-8-sig")
@@ -2771,6 +2810,12 @@ n_viajes = len(df_viajes)
 carga_total_asignada = float(df_viajes["carga_kg"].sum()) if n_viajes > 0 else 0.0
 dist_total_km = float(df_viajes["d_total_km"].sum()) if n_viajes > 0 else np.nan
 tiempo_total_h_turnos = float(df_camiones["tiempo_turno_h"].sum()) if len(df_camiones) > 0 else np.nan
+galones_estimados = dist_total_km / RENDIMIENTO_KM_GAL if np.isfinite(dist_total_km) and RENDIMIENTO_KM_GAL > 0 else np.nan
+costo_diesel_usd = galones_estimados * PRECIO_DIESEL_USD_GAL if np.isfinite(galones_estimados) else np.nan
+costo_nomina_mensual_usd = n_camiones * (
+    NUMERO_RECOLECTORES_CAMION * SUELDO_RECOLECTORES_USD
+    + NUMERO_CHOFER_CAMION * SUELDO_CHOFER_USD
+)
 
 error_kg = carga_total_asignada - total_demanda
 error_rel_pct = (100*error_kg/total_demanda) if total_demanda > 0 else np.nan
@@ -2795,6 +2840,8 @@ print(f"Carga total asignada (kg): {carga_total_asignada:,.2f}")
 print(f"Error carga vs demanda: {error_kg:,.2f} kg  ({error_rel_pct:.3f}%)")
 print(f"Distancia total (km): {dist_total_km:,.2f}" if np.isfinite(dist_total_km) else "Distancia total: N/A")
 print(f"Tiempo total sumado de turnos (h): {tiempo_total_h_turnos:,.2f}" if np.isfinite(tiempo_total_h_turnos) else "Tiempo total: N/A")
+print(f"Diesel estimado: {galones_estimados:,.2f} gal | Costo: ${costo_diesel_usd:,.2f}" if np.isfinite(costo_diesel_usd) else "Diesel estimado: N/A")
+print(f"Costo nomina mensual flota: ${costo_nomina_mensual_usd:,.2f}")
 print(f"Gini de basura: {gini_demanda:.3f}")
 if hay_densidad:
     print(f"Correlación basura vs densidad poblacional: {corr_dens_dem:.3f}")
