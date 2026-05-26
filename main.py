@@ -1,4 +1,4 @@
-# CELDA 1 (DISTANCIA): Carga grafo + obtiene clientes (por etiqueta o fallback polígono) + estación/relleno
+﻿# CELDA 1 (DISTANCIA): Carga grafo + obtiene clientes (por etiqueta o fallback polÃ­gono) + estaciÃ³n/relleno
 import osmnx as ox
 import networkx as nx
 import numpy as np
@@ -30,12 +30,23 @@ RENDIMIENTO_KM_GAL = 4.5
 PESO_BASURA_NODOS_RESTAURANTES = 8.0
 PESO_BASURA_NODOS_TIENDAS = 3.0
 PESO_BASURA_NODOS_OTROS_CLIENTES = 2.0
+PESOS_BASURA_POR_TIPO_NODO = {
+    "hogar_urbano": 1.0,
+    "bar": 4.06,
+    "restaurante": 8.5,
+    "hotel": 5.69,
+    "escuela": 37.09,
+    "universidad": 111.19,
+    "mercado_pequeno": 1149.25,
+    "mercado_grande": 7208.96,
+    "otros": 1.0,
+}
 
 try:
     from IPython.display import display
 except ImportError:
     def display(obj):
-        """Fallback simple para ejecución local fuera de notebooks."""
+        """Fallback simple para ejecuciÃ³n local fuera de notebooks."""
         try:
             print(obj.to_string(index=False))
         except Exception:
@@ -55,13 +66,13 @@ print("   -> OK grafo cargado.")
 # 0) Validar que exista 'length' (distancia en metros)
 u0, v0, d0 = next(iter(G.edges(data=True)))
 if "length" not in d0:
-    raise ValueError("❌ El grafo no tiene atributo 'length' en aristas. No se puede trabajar por distancia.")
+    raise ValueError("âŒ El grafo no tiene atributo 'length' en aristas. No se puede trabajar por distancia.")
 
 # 1) Coordenadas clave
 loc_estacion = (-2.8758464, -78.9814250)  # (lat, lon)
 loc_relleno  = (-2.965480,  -78.930210)   # (lat, lon)
 
-# 2) Intentar leer clientes/estación/relleno por etiquetas si existen
+# 2) Intentar leer clientes/estaciÃ³n/relleno por etiquetas si existen
 nodos_clientes = []
 dict_demandas = {}
 id_estacion = None
@@ -74,7 +85,7 @@ for _, data in G.nodes(data=True):
         break
 
 if tiene_tipo:
-    print("2) Detecté 'tipo_nodo' en el grafo. Leyendo clientes etiquetados...")
+    print("2) DetectÃ© 'tipo_nodo' en el grafo. Leyendo clientes etiquetados...")
     for nodo, data in G.nodes(data=True):
         tipo = data.get("tipo_nodo", "")
         if tipo == "cliente":
@@ -90,15 +101,15 @@ if tiene_tipo:
         elif tipo == "relleno":
             id_relleno = nodo
 
-# 3) Si no detectó estación/relleno por etiqueta, usar nearest_nodes
+# 3) Si no detectÃ³ estaciÃ³n/relleno por etiqueta, usar nearest_nodes
 if id_estacion is None:
     id_estacion = ox.distance.nearest_nodes(G, loc_estacion[1], loc_estacion[0])
 if id_relleno is None:
     id_relleno = ox.distance.nearest_nodes(G, loc_relleno[1],  loc_relleno[0])
 
-# 4) Fallback: si no hay clientes etiquetados, usar polígono + buffer (para acercarte a 307)
+# 4) Fallback: si no hay clientes etiquetados, usar polÃ­gono + buffer (para acercarte a 307)
 if len(nodos_clientes) == 0:
-    print("⚠️ No hay clientes etiquetados. Uso fallback: polígono detallado + buffer para aproximar 307.")
+    print("âš ï¸ No hay clientes etiquetados. Uso fallback: polÃ­gono detallado + buffer para aproximar 307.")
 
     puntos_zona_google = [
         (-2.887645, -79.009025), (-2.887736, -79.007586), (-2.887923, -79.006348),
@@ -122,7 +133,7 @@ if len(nodos_clientes) == 0:
     poligono = geom.Polygon(polygon_points)
 
     if not poligono.is_valid:
-        print("   Polígono inválido:", explain_validity(poligono))
+        print("   PolÃ­gono invÃ¡lido:", explain_validity(poligono))
         poligono = poligono.buffer(0)
 
     if poligono.geom_type == "MultiPolygon":
@@ -161,39 +172,39 @@ if len(nodos_clientes) == 0:
 
     print(f"   -> Buffer elegido: {buffer_opt} m | clientes: {count_opt}")
 
-print("\n✅ DATOS LISTOS:")
+print("\nâœ… DATOS LISTOS:")
 print(f"   -> Clientes a visitar: {len(nodos_clientes)}")
-print(f"   -> Nodo Estación: {id_estacion}")
+print(f"   -> Nodo EstaciÃ³n: {id_estacion}")
 print(f"   -> Nodo Relleno:  {id_relleno}")
 
-# Si no tienes demandas aquí, lo normal es calcularlas en la CELDA 2 (POIs o distribución base)
+# Si no tienes demandas aquÃ­, lo normal es calcularlas en la CELDA 2 (POIs o distribuciÃ³n base)
 if len(dict_demandas) > 0:
     print(f"   -> Demanda Total (si aplica): {sum(dict_demandas.values()):.2f} kg")
 else:
-    print("   -> Demanda: se definirá en CELDA 2 (recomendado).")
+    print("   -> Demanda: se definirÃ¡ en CELDA 2 (recomendado).")
 
 # CELDA 2 (ROBUSTA): POIs + demandas (sirve con o sin poligono_zona)
 import pandas as pd
 import numpy as np
 import shapely.geometry as geom
 
-print("1) Descargando Puntos de Interés (POIs) de OSM...")
+print("1) Descargando Puntos de InterÃ©s (POIs) de OSM...")
 
 tags = {
-    'amenity': ['restaurant', 'cafe', 'fast_food', 'bar', 'pub', 'marketplace', 'school'],
+    'amenity': ['restaurant', 'cafe', 'fast_food', 'bar', 'pub', 'marketplace', 'school', 'college', 'university'],
     'shop': True,
     'tourism': ['hotel', 'hostel'],
-    'building': ['apartments', 'retail', 'commercial']
+    'building': ['apartments', 'retail', 'commercial', 'university', 'school']
 }
 
 # ---------------------------------------------------------
-# A) Asegurar un polígono para consultar POIs
+# A) Asegurar un polÃ­gono para consultar POIs
 # ---------------------------------------------------------
 if "poligono_zona" in globals() and poligono_zona is not None:
     poly_query = poligono_zona
-    print("   -> Usando polígono definido (poligono_zona).")
+    print("   -> Usando polÃ­gono definido (poligono_zona).")
 else:
-    print("   -> No existe poligono_zona. Creando polígono desde nodos_clientes (convex hull)...")
+    print("   -> No existe poligono_zona. Creando polÃ­gono desde nodos_clientes (convex hull)...")
     pts = [(G.nodes[n]['x'], G.nodes[n]['y']) for n in nodos_clientes]
     poly_query = geom.MultiPoint(pts).convex_hull.buffer(0.0005)  # ~50m aprox (ojo: aprox)
 
@@ -204,20 +215,47 @@ try:
     pois = ox.features_from_polygon(poly_query, tags)
     print(f"   -> Se encontraron {len(pois)} POIs relevantes.")
 except Exception as e:
-    print(f"   -> No se pudieron obtener POIs ({e}). Usaremos distribución base.")
+    print(f"   -> No se pudieron obtener POIs ({e}). Usaremos distribuciÃ³n base.")
     pois = pd.DataFrame()
 
 # ---------------------------------------------------------
 # C) Pesos base por nodo (residencial)
 # ---------------------------------------------------------
-pesos_nodos = {nodo: PESO_BASURA_NODOS_OTROS_CLIENTES for nodo in nodos_clientes}
+pesos_nodos = {nodo: PESOS_BASURA_POR_TIPO_NODO["hogar_urbano"] for nodo in nodos_clientes}
+tipos_basura_nodos = {nodo: "hogar_urbano" for nodo in nodos_clientes}
 
-# Ponderaciones
-w_comida  = PESO_BASURA_NODOS_RESTAURANTES
-w_tienda  = PESO_BASURA_NODOS_TIENDAS
-w_hotel   = PESO_BASURA_NODOS_TIENDAS
-w_escuela = PESO_BASURA_NODOS_OTROS_CLIENTES
-w_normal  = PESO_BASURA_NODOS_OTROS_CLIENTES
+def tipo_basura_desde_poi(row):
+    amenity = row.get("amenity", None)
+    tourism = row.get("tourism", None)
+    shop = row.get("shop", None)
+    building = row.get("building", None)
+    name = str(row.get("name", "") or "").lower()
+
+    if isinstance(amenity, str) and amenity in ["university", "college"]:
+        return "universidad"
+    if isinstance(building, str) and building == "university":
+        return "universidad"
+    if isinstance(amenity, str) and amenity == "school":
+        return "escuela"
+    if isinstance(building, str) and building == "school":
+        return "escuela"
+    if isinstance(tourism, str) and tourism in ["hotel", "hostel"]:
+        return "hotel"
+    if isinstance(amenity, str) and amenity in ["bar", "pub"]:
+        return "bar"
+    if isinstance(amenity, str) and amenity in ["restaurant", "fast_food", "cafe"]:
+        return "restaurante"
+    if isinstance(amenity, str) and amenity == "marketplace":
+        return "mercado_grande"
+    if isinstance(shop, str) and shop in ["supermarket", "department_store", "mall", "wholesale"]:
+        return "mercado_grande"
+    if isinstance(shop, str) and shop in ["convenience", "greengrocer", "bakery", "butcher", "deli", "general"]:
+        return "mercado_pequeno"
+    if "mercado" in name or "market" in name:
+        return "mercado_grande"
+    if (shop is not None and not pd.isna(shop)) or isinstance(building, str) and building in ["retail", "commercial"]:
+        return "otros"
+    return "otros"
 
 # ---------------------------------------------------------
 # D) Aumentar peso si hay negocio cerca
@@ -233,20 +271,12 @@ if not pois.empty:
         if nearest_node not in pesos_nodos:
             continue
 
-        amenity = row.get("amenity", None)
-        tourism = row.get("tourism", None)
-        shop    = row.get("shop", None)
+        tipo_basura = tipo_basura_desde_poi(row)
+        peso_tipo = PESOS_BASURA_POR_TIPO_NODO.get(tipo_basura, PESOS_BASURA_POR_TIPO_NODO["otros"])
 
-        if isinstance(amenity, str) and amenity in ["restaurant","fast_food","marketplace","cafe","bar","pub"]:
-            pesos_nodos[nearest_node] += w_comida
-        elif isinstance(amenity, str) and amenity == "school":
-            pesos_nodos[nearest_node] += w_escuela
-        elif isinstance(tourism, str) and tourism in ["hotel","hostel"]:
-            pesos_nodos[nearest_node] += w_hotel
-        elif (shop is not None) and (not pd.isna(shop)):
-            pesos_nodos[nearest_node] += w_tienda
-        else:
-            pesos_nodos[nearest_node] += w_normal
+        if peso_tipo > pesos_nodos[nearest_node]:
+            pesos_nodos[nearest_node] = peso_tipo
+            tipos_basura_nodos[nearest_node] = tipo_basura
 
 # ---------------------------------------------------------
 # E) Normalizar a TOTAL_BASURA_KG + aleatoriedad controlada
@@ -266,6 +296,8 @@ for nodo in nodos_clientes:
     kg_final = max(0.0, round(kg_reales * variacion, 2))
 
     G.nodes[nodo]["demanda_kg"] = kg_final
+    G.nodes[nodo]["tipo_basura"] = tipos_basura_nodos.get(nodo, "hogar_urbano")
+    G.nodes[nodo]["peso_relativo_basura"] = float(pesos_nodos[nodo])
     dict_demandas[nodo] = kg_final
     lista_demandas_visual.append(kg_final)
 
@@ -281,7 +313,7 @@ if diferencia > 0:
     G.nodes[n0]["demanda_kg"] = dict_demandas[n0]
 
 elif diferencia < 0:
-    # sobra basura: resto repartiendo desde los que más tienen
+    # sobra basura: resto repartiendo desde los que mÃ¡s tienen
     exceso = -diferencia
     nodos_ordenados = sorted(nodos_clientes, key=lambda n: dict_demandas[n], reverse=True)
 
@@ -294,9 +326,9 @@ elif diferencia < 0:
         exceso = round(exceso - quitar, 2)
 
     if exceso > 0:
-        print(f"⚠️ Aviso: no se pudo ajustar todo el exceso ({exceso} kg).")
+        print(f"âš ï¸ Aviso: no se pudo ajustar todo el exceso ({exceso} kg).")
 
-# (Opcional) micro-ajuste final por redondeos (ya debería ser 0.00 casi siempre)
+# (Opcional) micro-ajuste final por redondeos (ya deberÃ­a ser 0.00 casi siempre)
 residual = round(TOTAL_BASURA_KG - sum(dict_demandas.values()), 2)
 if residual != 0:
     n0 = nodos_clientes[0]
@@ -304,13 +336,14 @@ if residual != 0:
     G.nodes[n0]["demanda_kg"] = dict_demandas[n0]
 
 # ---------------------------------------------------------
-# G) Estadísticas
+# G) EstadÃ­sticas
 # ---------------------------------------------------------
-print("\n--- ESTADÍSTICAS DE GENERACIÓN DE BASURA ---")
+print("\n--- ESTADÃSTICAS DE GENERACIÃ“N DE BASURA ---")
 print(f"Total Basura: {sum(dict_demandas.values()):.2f} kg (Objetivo: {TOTAL_BASURA_KG})")
 print(f"Nodo con MENOS basura: {min(dict_demandas.values()):.2f} kg (Residencial)")
-print(f"Nodo con MÁS basura:   {max(dict_demandas.values()):.2f} kg (Hotspot)")
+print(f"Nodo con MÃS basura:   {max(dict_demandas.values()):.2f} kg (Hotspot)")
 print(f"Promedio: {np.mean(list(dict_demandas.values())):.2f} kg")
+print("Tipos de nodo:", pd.Series(list(tipos_basura_nodos.values())).value_counts().to_dict())
 
 top_3 = sorted(dict_demandas.items(), key=lambda x: x[1], reverse=True)[:3]
 print(f"\nTop 3 Hotspots: {top_3}")
@@ -353,7 +386,7 @@ idx = {node: i for i, node in enumerate(lista_lugares)}
 print(f"Calculando matriz de DISTANCIAS por calles entre {n} puntos (weight='length', grafo no dirigido)...")
 
 # -----------------------------
-# 2) Matriz de distancias mínimas (m) por OSM
+# 2) Matriz de distancias mÃ­nimas (m) por OSM
 # -----------------------------
 dist_m = np.full((n, n), np.inf, dtype=float)
 
@@ -364,15 +397,15 @@ for k, origen in enumerate(lista_lugares, 1):
         dist_m[i, j] = d.get(destino, np.inf)
 
     if k % 50 == 0:
-        print(f"  procesados {k}/{n} orígenes...")
+        print(f"  procesados {k}/{n} orÃ­genes...")
 
-print("✅ Matriz de distancias lista.")
+print("âœ… Matriz de distancias lista.")
 
 # -----------------------------
 # 3) Helpers D() y T() (esto es lo que usa CELDA 6)
 # -----------------------------
 def D(a, b):
-    """Distancia mínima (m) entre nodos a y b."""
+    """Distancia mÃ­nima (m) entre nodos a y b."""
     return dist_m[idx[a], idx[b]]
 
 def T(a, b, vel_kmh):
@@ -380,31 +413,31 @@ def T(a, b, vel_kmh):
     return tiempo_segundos(D(a, b), vel_kmh)
 
 # -----------------------------
-# 4) Funciones de tiempo por viaje (COINCIDE con la lógica de CELDA 6)
+# 4) Funciones de tiempo por viaje (COINCIDE con la lÃ³gica de CELDA 6)
 # -----------------------------
 def tiempo_viaje_s(ruta_clientes, origen_es_estacion=True,
                    incluir_recoleccion=True,
                    estacion=estacion, deposito=deposito):
     """
-    Tiempo de un viaje (SIN retorno final a estación), exactamente como CELDA 6:
-    - Aproximación (origen->primer cliente) a 40 km/h
+    Tiempo de un viaje (SIN retorno final a estaciÃ³n), exactamente como CELDA 6:
+    - AproximaciÃ³n (origen->primer cliente) a 40 km/h
     - Entre clientes a 10 km/h
-    - Recolección por nodo (opcional): 60s por parada (igual que CELDA 6)
-    - Último cliente -> depósito a 30 km/h
+    - RecolecciÃ³n por nodo (opcional): 60s por parada (igual que CELDA 6)
+    - Ãšltimo cliente -> depÃ³sito a 30 km/h
     """
     if not ruta_clientes:
-        return np.inf, {"error": "Ruta vacía"}
+        return np.inf, {"error": "Ruta vacÃ­a"}
 
     primer = ruta_clientes[0]
     ultimo = ruta_clientes[-1]
 
     detalle = {}
 
-    # 1) Aproximación (40)
+    # 1) AproximaciÃ³n (40)
     origen_nodo = estacion if origen_es_estacion else deposito
     t_aprox = T(origen_nodo, primer, V_ESTACION_A_PRIMERO)
 
-    # 2) Interno (10) + recolección
+    # 2) Interno (10) + recolecciÃ³n
     t_interno = 0.0
     if incluir_recoleccion:
         # En CELDA 6: suma 1 vez por cada nodo visitado
@@ -429,11 +462,11 @@ def tiempo_viaje_s(ruta_clientes, origen_es_estacion=True,
     return total, detalle
 
 def tiempo_fin_turno_s(estacion=estacion, deposito=deposito):
-    """Retorno final depósito -> estación (40 km/h)."""
+    """Retorno final depÃ³sito -> estaciÃ³n (40 km/h)."""
     return T(deposito, estacion, V_DEPOSITO_A_EST)
 
 # -----------------------------
-# 5) Prueba rápida (solo viaje + retorno final aparte)
+# 5) Prueba rÃ¡pida (solo viaje + retorno final aparte)
 # -----------------------------
 ruta_ejemplo = clientes[:5]
 t_viaje, det = tiempo_viaje_s(ruta_ejemplo, origen_es_estacion=True, incluir_recoleccion=True)
@@ -447,7 +480,7 @@ print(f"  Interno (10)+rec: {det['interno_s']/60:.2f}")
 print(f"  Descarga (30):  {det['descarga_s']/60:.2f}")
 
 t_fin = tiempo_fin_turno_s()
-print(f"\nRetorno final (Depósito->Estación, 40): {t_fin/60:.2f} min")
+print(f"\nRetorno final (DepÃ³sito->EstaciÃ³n, 40): {t_fin/60:.2f} min")
 
 # CELDA 4: Clarke & Wright usando DISTANCIAS por calles (metros) + tiempos compatibles con CELDA 6
 import numpy as np
@@ -466,7 +499,7 @@ def tiempo_segundos(dist_m, vel_kmh):
     return dist_m / vel_mps if vel_mps > 0 else np.inf
 
 def D(dist_matriz, idx, a, b):
-    """Distancia mínima (m) entre a y b desde dist_m."""
+    """Distancia mÃ­nima (m) entre a y b desde dist_m."""
     return dist_matriz[idx[a], idx[b]]
 
 # =========================================================
@@ -474,7 +507,7 @@ def D(dist_matriz, idx, a, b):
 # =========================================================
 def calcular_ahorros_dist(nodos, dist_matriz, idx, deposito_id):
     """
-    Savings clásico:
+    Savings clÃ¡sico:
       s(i,j) = d(i,dep) + d(dep,j) - d(i,j)
     usando DISTANCIAS por calles (m).
     """
@@ -499,7 +532,7 @@ def calcular_ahorros_dist(nodos, dist_matriz, idx, deposito_id):
     return ahorros
 
 # =========================================================
-# 2) EJECUTAR Clarke & Wright (distancia) con restricción de CAPACIDAD
+# 2) EJECUTAR Clarke & Wright (distancia) con restricciÃ³n de CAPACIDAD
 # =========================================================
 def ejecutar_clarke_wright_dist(nodos_clientes, dict_demanda, dist_matriz, idx, deposito_id, max_capacidad):
     """
@@ -522,7 +555,7 @@ def ejecutar_clarke_wright_dist(nodos_clientes, dict_demanda, dist_matriz, idx, 
         ruta_i_id = None
         ruta_j_id = None
 
-        # i debe ser FINAL de su ruta, j debe ser INICIO de su ruta (C&W clásico)
+        # i debe ser FINAL de su ruta, j debe ser INICIO de su ruta (C&W clÃ¡sico)
         for r_id, datos in rutas.items():
             if datos['camino'][-1] == i:
                 ruta_i_id = r_id
@@ -545,21 +578,21 @@ def tiempo_viaje_desde_dist_s(ruta_clientes, dist_matriz, idx, estacion_id, depo
                              origen_es_estacion=True,
                              incluir_recoleccion=True):
     """
-    Tiempo de UN VIAJE (sin retorno final a estación), igual que CELDA 6:
-      - Origen (estación si primer viaje, depósito si no) -> primer cliente: 40
+    Tiempo de UN VIAJE (sin retorno final a estaciÃ³n), igual que CELDA 6:
+      - Origen (estaciÃ³n si primer viaje, depÃ³sito si no) -> primer cliente: 40
       - Entre clientes: 10 + 60s por parada (opcional)
-      - Último cliente -> depósito: 30
+      - Ãšltimo cliente -> depÃ³sito: 30
     """
     if not ruta_clientes:
         return np.inf
 
     total = 0.0
 
-    # 1) Aproximación (40)
+    # 1) AproximaciÃ³n (40)
     origen = estacion_id if origen_es_estacion else deposito_id
     total += tiempo_segundos(D(dist_matriz, idx, origen, ruta_clientes[0]), V_ESTACION_A_PRIMERO)
 
-    # 2) Interno (10) + recolección
+    # 2) Interno (10) + recolecciÃ³n
     if incluir_recoleccion:
         total += TIEMPO_RECOLECCION_POR_NODO  # primera parada
 
@@ -574,10 +607,10 @@ def tiempo_viaje_desde_dist_s(ruta_clientes, dist_matriz, idx, estacion_id, depo
     return total
 
 def tiempo_fin_turno_s(dist_matriz, idx, deposito_id, estacion_id):
-    """Retorno final depósito -> estación (40)."""
+    """Retorno final depÃ³sito -> estaciÃ³n (40)."""
     return tiempo_segundos(D(dist_matriz, idx, deposito_id, estacion_id), V_DEPOSITO_A_EST)
 
-print("Funciones C&W (distancia) compiladas y tiempos alineados con CELDA 6 ✅")
+print("Funciones C&W (distancia) compiladas y tiempos alineados con CELDA 6 âœ…")
 
 # CELDA 4: Clarke & Wright usando DISTANCIAS por calles (metros) + tiempos compatibles con CELDA 6
 import numpy as np
@@ -596,7 +629,7 @@ def tiempo_segundos(dist_m, vel_kmh):
     return dist_m / vel_mps if vel_mps > 0 else np.inf
 
 def D(dist_matriz, idx, a, b):
-    """Distancia mínima (m) entre a y b desde dist_m."""
+    """Distancia mÃ­nima (m) entre a y b desde dist_m."""
     return dist_matriz[idx[a], idx[b]]
 
 # =========================================================
@@ -604,7 +637,7 @@ def D(dist_matriz, idx, a, b):
 # =========================================================
 def calcular_ahorros_dist(nodos, dist_matriz, idx, deposito_id):
     """
-    Savings clásico:
+    Savings clÃ¡sico:
       s(i,j) = d(i,dep) + d(dep,j) - d(i,j)
     usando DISTANCIAS por calles (m).
     """
@@ -629,7 +662,7 @@ def calcular_ahorros_dist(nodos, dist_matriz, idx, deposito_id):
     return ahorros
 
 # =========================================================
-# 2) EJECUTAR Clarke & Wright (distancia) con restricción de CAPACIDAD
+# 2) EJECUTAR Clarke & Wright (distancia) con restricciÃ³n de CAPACIDAD
 # =========================================================
 def ejecutar_clarke_wright_dist(nodos_clientes, dict_demanda, dist_matriz, idx, deposito_id, max_capacidad):
     """
@@ -652,7 +685,7 @@ def ejecutar_clarke_wright_dist(nodos_clientes, dict_demanda, dist_matriz, idx, 
         ruta_i_id = None
         ruta_j_id = None
 
-        # i debe ser FINAL de su ruta, j debe ser INICIO de su ruta (C&W clásico)
+        # i debe ser FINAL de su ruta, j debe ser INICIO de su ruta (C&W clÃ¡sico)
         for r_id, datos in rutas.items():
             if datos['camino'][-1] == i:
                 ruta_i_id = r_id
@@ -675,21 +708,21 @@ def tiempo_viaje_desde_dist_s(ruta_clientes, dist_matriz, idx, estacion_id, depo
                              origen_es_estacion=True,
                              incluir_recoleccion=True):
     """
-    Tiempo de UN VIAJE (sin retorno final a estación), igual que CELDA 6:
-      - Origen (estación si primer viaje, depósito si no) -> primer cliente: 40
+    Tiempo de UN VIAJE (sin retorno final a estaciÃ³n), igual que CELDA 6:
+      - Origen (estaciÃ³n si primer viaje, depÃ³sito si no) -> primer cliente: 40
       - Entre clientes: 10 + 60s por parada (opcional)
-      - Último cliente -> depósito: 30
+      - Ãšltimo cliente -> depÃ³sito: 30
     """
     if not ruta_clientes:
         return np.inf
 
     total = 0.0
 
-    # 1) Aproximación (40)
+    # 1) AproximaciÃ³n (40)
     origen = estacion_id if origen_es_estacion else deposito_id
     total += tiempo_segundos(D(dist_matriz, idx, origen, ruta_clientes[0]), V_ESTACION_A_PRIMERO)
 
-    # 2) Interno (10) + recolección
+    # 2) Interno (10) + recolecciÃ³n
     if incluir_recoleccion:
         total += TIEMPO_RECOLECCION_POR_NODO  # primera parada
 
@@ -704,13 +737,13 @@ def tiempo_viaje_desde_dist_s(ruta_clientes, dist_matriz, idx, estacion_id, depo
     return total
 
 def tiempo_fin_turno_s(dist_matriz, idx, deposito_id, estacion_id):
-    """Retorno final depósito -> estación (40)."""
+    """Retorno final depÃ³sito -> estaciÃ³n (40)."""
     return tiempo_segundos(D(dist_matriz, idx, deposito_id, estacion_id), V_DEPOSITO_A_EST)
 
-print("Funciones C&W (distancia) compiladas y tiempos alineados con CELDA 6 ✅")
+print("Funciones C&W (distancia) compiladas y tiempos alineados con CELDA 6 âœ…")
 
 # ---------------------------------------------------------
-# 4) Materializar lista_viajes para ejecución local
+# 4) Materializar lista_viajes para ejecuciÃ³n local
 # ---------------------------------------------------------
 PARAMETROS_OPERATIVOS = {
     "num_vehiculos": NUM_VEHICULOS_MAX,
@@ -986,17 +1019,13 @@ print(f"Rutas/Zonas generadas por Clarke & Wright: {len(zonas_hibridas)}")
 print(f"Mejora interna por 2-opt: {mejora_2opt_m/1000:.2f} km")
 display(df_comparacion_algoritmos.round(2))
 
-lista_viajes = []
-for ruta_info in rutas_clarke_wright:
-    camino = list(ruta_info.get("camino", []))
-    carga = float(ruta_info.get("carga", 0.0))
-
+def construir_viaje_operativo(camino, carga, zona=None, subzona=None, motivo=None):
     if not camino:
-        lista_viajes.append({
+        viaje = {
             "camino": [],
             "carga": carga,
             "valido": False,
-            "motivo": "Ruta vacia",
+            "motivo": motivo or "Ruta vacia",
             "tiempo_s": {
                 "si_sale_estacion": np.inf,
                 "si_sale_relleno": np.inf,
@@ -1007,9 +1036,11 @@ for ruta_info in rutas_clarke_wright:
                 "recoleccion": 0.0,
                 "descarga": np.inf,
             },
-            "zona": ruta_info.get("zona", None),
-        })
-        continue
+            "zona": zona,
+        }
+        if subzona is not None:
+            viaje["subzona"] = subzona
+        return viaje
 
     d_aprox_est = D(dist_m, idx, estacion, camino[0])
     d_aprox_rel = D(dist_m, idx, deposito, camino[0])
@@ -1037,7 +1068,7 @@ for ruta_info in rutas_clarke_wright:
     if not (np.isfinite(t_est) and np.isfinite(t_rel)):
         valido = False
 
-    lista_viajes.append({
+    viaje = {
         "camino": camino,
         "carga": carga,
         "valido": bool(valido),
@@ -1051,11 +1082,80 @@ for ruta_info in rutas_clarke_wright:
             "recoleccion": float(d_recoleccion),
             "descarga": float(d_descarga),
         },
-        "zona": ruta_info.get("zona", None),
-    })
+        "zona": zona,
+    }
+    if subzona is not None:
+        viaje["subzona"] = subzona
+    if motivo:
+        viaje["motivo"] = motivo
+    return viaje
+
+def dividir_ruta_por_capacidad(ruta_info, capacidad_kg):
+    camino = list(ruta_info.get("camino", []))
+    zona = ruta_info.get("zona", None)
+    partes = []
+    parte_camino = []
+    parte_carga = 0.0
+    subzona = 1
+
+    def cerrar_parte():
+        nonlocal parte_camino, parte_carga, subzona
+        if parte_camino:
+            partes.append({
+                "camino": parte_camino,
+                "carga": round(float(parte_carga), 2),
+                "zona": zona,
+                "subzona": subzona,
+            })
+            subzona += 1
+            parte_camino = []
+            parte_carga = 0.0
+
+    for nodo in camino:
+        demanda_nodo = float(dict_demandas.get(nodo, 0.0))
+
+        if demanda_nodo > capacidad_kg:
+            cerrar_parte()
+            restante = demanda_nodo
+            while restante > 0:
+                carga_parcial = min(restante, capacidad_kg)
+                partes.append({
+                    "camino": [nodo],
+                    "carga": round(float(carga_parcial), 2),
+                    "zona": zona,
+                    "subzona": subzona,
+                    "motivo": "Demanda de nodo dividida por capacidad",
+                })
+                subzona += 1
+                restante = round(restante - carga_parcial, 2)
+            continue
+
+        if parte_carga + demanda_nodo > capacidad_kg:
+            cerrar_parte()
+
+        parte_camino.append(nodo)
+        parte_carga += demanda_nodo
+
+    cerrar_parte()
+    return partes
+
+lista_viajes = []
+for ruta_info in rutas_clarke_wright:
+    for parte in dividir_ruta_por_capacidad(ruta_info, CAPACIDAD_MAXIMA_KG):
+        lista_viajes.append(construir_viaje_operativo(
+            camino=list(parte.get("camino", [])),
+            carga=float(parte.get("carga", 0.0)),
+            zona=parte.get("zona", None),
+            subzona=parte.get("subzona", None),
+            motivo=parte.get("motivo", None),
+        ))
+
+sobrecargados = [v for v in lista_viajes if float(v.get("carga", 0.0)) > CAPACIDAD_MAXIMA_KG + 0.01]
+if sobrecargados:
+    raise ValueError(f"Hay {len(sobrecargados)} viajes sobre la capacidad maxima de {CAPACIDAD_MAXIMA_KG:.0f} kg.")
 
 print(f"Viajes Clarke & Wright generados: {len(lista_viajes)}")
-print(f"Viajes válidos para asignación: {sum(1 for v in lista_viajes if v.get('valido'))}")
+print(f"Viajes vÃ¡lidos para asignaciÃ³n: {sum(1 for v in lista_viajes if v.get('valido'))}")
 
 
 # CELDA 6 (V3): Asignacion por turnos reales, sin descarga intermedia por llenado
@@ -1064,9 +1164,30 @@ import numpy as np
 HORAS_TRABAJO = HORAS_TRABAJO_H * 3600  # segundos
 HORAS_TRABAJO_MIN = HORAS_TRABAJO_MIN_H * 3600  # segundos
 TURNOS_OPERATIVOS = [
-    {"turno": 1, "horario": "06:00-14:30", "descarga": "fin", "descripcion": "Recolecta y descarga en relleno al terminar"},
-    {"turno": 2, "horario": "13:00-21:30", "descarga": "inicio", "descripcion": "Descarga al iniciar, recolecta y deja el camion en el punto de inicio"},
-    {"turno": 3, "horario": "15:00-24:00", "descarga": "inicio", "descripcion": "Descarga al iniciar, recolecta y deja el camion en el punto de inicio"},
+    {
+        "turno": 1,
+        "horario": "06:00-14:30",
+        "descarga": "inicio",
+        "estado_inicial_camion": "lleno_turno_anterior",
+        "estado_final_camion": "lleno_turno_actual",
+        "descripcion": "Recibe camion lleno, descarga al iniciar, recolecta y lo deja lleno en estacion",
+    },
+    {
+        "turno": 2,
+        "horario": "13:00-21:30",
+        "descarga": "inicio",
+        "estado_inicial_camion": "lleno_turno_anterior",
+        "estado_final_camion": "lleno_turno_actual",
+        "descripcion": "Recibe camion lleno, descarga al iniciar, recolecta y lo deja lleno en estacion",
+    },
+    {
+        "turno": 3,
+        "horario": "15:00-24:00",
+        "descarga": "inicio",
+        "estado_inicial_camion": "lleno_turno_anterior",
+        "estado_final_camion": "lleno_turno_actual",
+        "descripcion": "Recibe camion lleno, descarga al iniciar, recolecta y lo deja lleno en estacion",
+    },
 ]
 
 # --------------------------
@@ -1086,11 +1207,11 @@ def T(a, b, vel_kmh):
 
 V_DEPOSITO_A_EST = PARAMETROS_OPERATIVOS["velocidad_retorno_kmh"]
 t_retorno_casa = T(id_relleno, id_estacion, V_DEPOSITO_A_EST)
-print(f"Tiempo de seguridad (Relleno -> Estación): {t_retorno_casa/60:.2f} min")
+print(f"Tiempo de seguridad (Relleno -> EstaciÃ³n): {t_retorno_casa/60:.2f} min")
 
 if not np.isfinite(t_retorno_casa):
-    print("⚠️ No hay camino Relleno -> Estación en la matriz de distancias.")
-    print("   Solución típica: recalcular dist_m con un grafo no dirigido (nx.Graph(G)).")
+    print("âš ï¸ No hay camino Relleno -> EstaciÃ³n en la matriz de distancias.")
+    print("   SoluciÃ³n tÃ­pica: recalcular dist_m con un grafo no dirigido (nx.Graph(G)).")
 
 # ---------------------------------------------------------
 # 1) Lista de zonas/sectores validos
@@ -1179,6 +1300,8 @@ def construir_camion_servicio(servicio_id, turno_info, fuentes):
         carga += float(fuente.get("carga", 0.0))
         if "zona" in fuente:
             zonas.append(int(fuente["zona"]))
+    if carga > CAPACIDAD_MAXIMA_KG + 0.01:
+        return None
     evaluacion = evaluar_servicio(camino, turno_info)
     if evaluacion is None:
         return None
@@ -1192,6 +1315,8 @@ def construir_camion_servicio(servicio_id, turno_info, fuentes):
         "turno": turno_info["turno"],
         "horario": turno_info["horario"],
         "modalidad_descarga": turno_info["descarga"],
+        "estado_inicial_camion": turno_info.get("estado_inicial_camion", "lleno_turno_anterior"),
+        "estado_final_camion": turno_info.get("estado_final_camion", "lleno_turno_actual"),
         "zonas": sorted(set(zonas)),
         "costos": evaluacion["costos"],
         "distancias_m": evaluacion["distancias_m"],
@@ -1204,6 +1329,8 @@ def construir_camion_servicio(servicio_id, turno_info, fuentes):
         "turno": turno_info["turno"],
         "horario": turno_info["horario"],
         "descarga": turno_info["descarga"],
+        "estado_inicial_camion": turno_info.get("estado_inicial_camion", "lleno_turno_anterior"),
+        "estado_final_camion": turno_info.get("estado_final_camion", "lleno_turno_actual"),
         "descripcion_turno": turno_info["descripcion"],
         "viajes": [viaje],
         "tiempo_total_s": evaluacion["tiempo_s"],
@@ -1221,12 +1348,12 @@ id_camion = 1
 
 def tiempo_viaje_para_camion(viaje, camion):
     """
-    Si camion aún no tiene viajes => sale estación
+    Si camion aÃºn no tiene viajes => sale estaciÃ³n
     Si ya tiene => sale relleno
     """
     es_primer = (len(camion["viajes"]) == 0)
     if es_primer:
-        return "Estación", viaje["tiempo_s"]["si_sale_estacion"], viaje["dist_tramos_m"]["aprox_desde_estacion"]
+        return "EstaciÃ³n", viaje["tiempo_s"]["si_sale_estacion"], viaje["dist_tramos_m"]["aprox_desde_estacion"]
     else:
         return "Relleno",  viaje["tiempo_s"]["si_sale_relleno"],  viaje["dist_tramos_m"]["aprox_desde_relleno"]
 
@@ -1236,7 +1363,7 @@ def tiempo_viaje_para_camion_programado(viaje, camion):
 
     es_primer = (len(camion["viajes"]) == 0)
     if es_primer:
-        origen = "Estación"
+        origen = "EstaciÃ³n"
         t_base = viaje["tiempo_s"]["si_sale_estacion"]
         d_aprox = viaje["dist_tramos_m"]["aprox_desde_estacion"]
     else:
@@ -1261,20 +1388,20 @@ def cabe_en_camion(viaje, camion):
 
 def score_best_fit(viaje, camion):
     """
-    Queremos el camión que quede MÁS lleno (proyectado) pero sin pasarse.
-    Score = tiempo proyectado sin retorno (mientras más alto, mejor).
+    Queremos el camiÃ³n que quede MÃS lleno (proyectado) pero sin pasarse.
+    Score = tiempo proyectado sin retorno (mientras mÃ¡s alto, mejor).
     """
     _, t_viaje_s, _, _, _ = tiempo_viaje_para_camion_programado(viaje, camion)
     return camion["tiempo_s_sin_retorno"] + t_viaje_s
 
 # ---------------------------------------------------------
-# 3) Asignación Best-Fit Decreasing
+# 3) AsignaciÃ³n Best-Fit Decreasing
 # ---------------------------------------------------------
 for viaje in viajes_pendientes:
     mejor_idx = None
     mejor_score = -np.inf
 
-    # intentar meterlo en un camión existente
+    # intentar meterlo en un camiÃ³n existente
     for k, cam in enumerate(camiones):
         if cabe_en_camion(viaje, cam):
             sc = score_best_fit(viaje, cam)
@@ -1282,7 +1409,7 @@ for viaje in viajes_pendientes:
                 mejor_score = sc
                 mejor_idx = k
 
-    # si no cabe en ninguno, crear camión nuevo
+    # si no cabe en ninguno, crear camiÃ³n nuevo
     if mejor_idx is None:
         camiones.append({
             "id": id_camion,
@@ -1294,7 +1421,7 @@ for viaje in viajes_pendientes:
 
         # si ni como primer viaje cabe, es un viaje imposible en 8h
         if not cabe_en_camion(viaje, camiones[mejor_idx]):
-            print("⚠️ Viaje no cabe ni como primer viaje con retorno. Revisa parámetros/velocidades/zona.")
+            print("âš ï¸ Viaje no cabe ni como primer viaje con retorno. Revisa parÃ¡metros/velocidades/zona.")
             continue
 
     cam = camiones[mejor_idx]
@@ -1351,12 +1478,12 @@ for cam in camiones:
 
 # imprimir resumen
 for c in camiones_final:
-    print(f"\n--- Camión {c['id']} ---")
+    print(f"\n--- CamiÃ³n {c['id']} ---")
     print(f"Viajes asignados: {len(c['viajes'])}")
     print(f"Tiempo turno: {c['tiempo_total_h']:.2f} horas (incluye retorno)")
 
 camiones = camiones_final
-print(f"\nℹ️ Diagnostico modelo anterior: {len(camiones)} camiones si se descarga despues de cada viaje. Se reemplaza por turnos reales abajo.")
+print(f"\nâ„¹ï¸ Diagnostico modelo anterior: {len(camiones)} camiones si se descarga despues de cada viaje. Se reemplaza por turnos reales abajo.")
 
 # Recalcular la operacion final como servicios de turno reales:
 # una descarga por chofer, sin viajes intermedios al relleno por llenado.
@@ -1399,10 +1526,10 @@ for fuente in viajes_pendientes:
     turno_info = TURNOS_OPERATIVOS[(servicio_id - 1) % len(TURNOS_OPERATIVOS)]
     nuevo = construir_camion_servicio(servicio_id, turno_info, [fuente])
     if nuevo is None:
-        print("⚠️ Servicio no enrutable; se omite una zona.")
+        print("âš ï¸ Servicio no enrutable; se omite una zona.")
         continue
     if nuevo["tiempo_productivo_s"] > HORAS_TRABAJO:
-        print(f"⚠️ Servicio {servicio_id} excede 8h ({nuevo['tiempo_total_h']:.2f}h). Se mantiene para no perder cobertura.")
+        print(f"âš ï¸ Servicio {servicio_id} excede 8h ({nuevo['tiempo_total_h']:.2f}h). Se mantiene para no perder cobertura.")
     nuevo["_fuentes"] = [fuente]
     servicios.append(nuevo)
     servicio_id += 1
@@ -1412,19 +1539,30 @@ for servicio in servicios:
     servicio.pop("_fuentes", None)
     camiones.append(servicio)
 
+servicios_sobrecargados = []
+for servicio in camiones:
+    carga_servicio = sum(float(v.get("carga", 0.0)) for v in servicio.get("viajes", []))
+    if carga_servicio > CAPACIDAD_MAXIMA_KG + 0.01:
+        servicios_sobrecargados.append((servicio.get("id"), carga_servicio))
+if servicios_sobrecargados:
+    raise ValueError(
+        "Servicios sobre capacidad maxima de "
+        f"{CAPACIDAD_MAXIMA_KG:.0f} kg: {servicios_sobrecargados}"
+    )
+
 for c in camiones:
     carga = sum(float(v.get("carga", 0.0)) for v in c["viajes"])
     paradas = sum(len(v.get("nodos", [])) for v in c["viajes"])
     print(f"\n--- Servicio {c['id']} | Vehiculo {c['vehiculo_id']} | Turno {c['turno']} ({c['horario']}) ---")
-    print(f"Descarga: {'al final' if c['descarga'] == 'fin' else 'al inicio'}")
+    print("Flujo: Estacion llena -> Relleno descarga -> Recoleccion -> Estacion llena")
     print(f"Carga: {carga:.2f} kg | Paradas: {paradas} | Tiempo programado: {c['tiempo_total_h']:.2f} h | Productivo: {c.get('tiempo_productivo_h', c['tiempo_total_h']):.2f} h")
 
 vehiculos_fisicos = len(set(c['vehiculo_id'] for c in camiones))
 if vehiculos_fisicos > NUM_VEHICULOS:
-    print(f"⚠️ Se requieren {vehiculos_fisicos} vehículos físicos y el máximo disponible es {NUM_VEHICULOS}.")
-print(f"\n✅ RESUMEN FINAL POR TURNOS: {len(camiones)} servicios, {vehiculos_fisicos} vehículos físicos estimados de {NUM_VEHICULOS} disponibles.")
+    print(f"âš ï¸ Se requieren {vehiculos_fisicos} vehÃ­culos fÃ­sicos y el mÃ¡ximo disponible es {NUM_VEHICULOS}.")
+print(f"\nâœ… RESUMEN FINAL POR TURNOS: {len(camiones)} servicios, {vehiculos_fisicos} vehÃ­culos fÃ­sicos estimados de {NUM_VEHICULOS} disponibles.")
 
-# CELDA 7 (COMPLETA): Densidad poblacional real (hab/km²) por nodo usando raster de densidad + fallback vecindario
+# CELDA 7 (COMPLETA): Densidad poblacional real (hab/kmÂ²) por nodo usando raster de densidad + fallback vecindario
 import geopandas as gpd
 import pandas as pd
 import numpy as np
@@ -1435,9 +1573,9 @@ from shapely.geometry import Point
 from shapely.geometry import mapping
 
 POP_RASTER_PATH = "ecu_pd_2020_1km.tif"
-RADIO_M = 500  # buffer en metros (ajusta 200-800 según zona)
+RADIO_M = 500  # buffer en metros (ajusta 200-800 segÃºn zona)
 
-print("Calculando densidad poblacional (hab/km²) por nodo...")
+print("Calculando densidad poblacional (hab/kmÂ²) por nodo...")
 
 # ---------------------------------------------------------
 # A) Construir GeoDataFrame de puntos clientes (WGS84)
@@ -1446,6 +1584,8 @@ gdf_pts = gpd.GeoDataFrame(
     [{
         "id_nodo": int(n),
         "demanda_kg": float(dict_demandas.get(n, 0.0)),
+        "tipo_basura": str(tipos_basura_nodos.get(n, G.nodes[n].get("tipo_basura", "hogar_urbano"))),
+        "peso_relativo_basura": float(pesos_nodos.get(n, G.nodes[n].get("peso_relativo_basura", 1.0))),
         "geometry": Point(G.nodes[n]['x'], G.nodes[n]['y'])
     } for n in nodos_clientes],
     crs="EPSG:4326"
@@ -1454,20 +1594,20 @@ gdf_pts = gpd.GeoDataFrame(
 print("  -> Puntos clientes:", len(gdf_pts))
 
 # ---------------------------------------------------------
-# B) Buffer en metros: reproyectar a UTM para área real
+# B) Buffer en metros: reproyectar a UTM para Ã¡rea real
 # ---------------------------------------------------------
 utm_crs = gdf_pts.estimate_utm_crs()
 gdf_m = gdf_pts.to_crs(utm_crs)
 gdf_m["buffer"] = gdf_m.geometry.buffer(RADIO_M)
 
-# Área confiable (km²) desde UTM
-area_km2 = (gdf_m["buffer"].area / 1e6).values  # km²
+# Ãrea confiable (kmÂ²) desde UTM
+area_km2 = (gdf_m["buffer"].area / 1e6).values  # kmÂ²
 
 # ---------------------------------------------------------
 # C) Helpers: promedio en buffer + fallback vecindario
 # ---------------------------------------------------------
 def nanmean_from_mask(src, geom, nodata):
-    """Promedio de valores válidos dentro de un polígono (buffer)."""
+    """Promedio de valores vÃ¡lidos dentro de un polÃ­gono (buffer)."""
     out_img, _ = mask(src, [mapping(geom)], crop=True)
     band = out_img[0].astype(float)
     if nodata is not None:
@@ -1478,7 +1618,7 @@ def nanmean_from_mask(src, geom, nodata):
 
 def densidad_vecindario(src, x, y, nodata, half_windows_px=(0, 1, 2, 3, 5, 8, 12, 20)):
     """
-    Fallback: busca densidad válida alrededor del punto (x,y) en ventanas crecientes.
+    Fallback: busca densidad vÃ¡lida alrededor del punto (x,y) en ventanas crecientes.
     half_windows_px=0 significa solo el pixel del punto.
     """
     # Convertir a fila/col
@@ -1502,7 +1642,7 @@ def densidad_vecindario(src, x, y, nodata, half_windows_px=(0, 1, 2, 3, 5, 8, 12
     return np.nan
 
 # ---------------------------------------------------------
-# D) Leer raster y calcular densidad/población por nodo
+# D) Leer raster y calcular densidad/poblaciÃ³n por nodo
 # ---------------------------------------------------------
 densidades = []
 poblaciones = []
@@ -1516,18 +1656,18 @@ with rasterio.open(POP_RASTER_PATH) as src:
     gdf_pts_r = gdf_pts.to_crs(src.crs)
 
     for geom_buf, pt, a_km2 in zip(gdf_buf.geometry, gdf_pts_r.geometry, area_km2):
-        # 1) intento con buffer (promedio dentro del área)
+        # 1) intento con buffer (promedio dentro del Ã¡rea)
         dens = np.nan
         try:
             dens = nanmean_from_mask(src, geom_buf, nodata)
         except Exception:
             dens = np.nan
 
-        # 2) si buffer es NaN -> fallback vecindario (pixel cercano válido)
+        # 2) si buffer es NaN -> fallback vecindario (pixel cercano vÃ¡lido)
         if not np.isfinite(dens):
             dens = densidad_vecindario(src, pt.x, pt.y, nodata)
 
-        # 3) población estimada (densidad hab/km² * área km²)
+        # 3) poblaciÃ³n estimada (densidad hab/kmÂ² * Ã¡rea kmÂ²)
         pop = float(dens * a_km2) if np.isfinite(dens) else np.nan
 
         densidades.append(dens)
@@ -1538,12 +1678,12 @@ gdf_pts["densidad_pob_km2"] = np.array(densidades, dtype=float)
 gdf_pts["pob_buffer"] = np.array(poblaciones, dtype=float)
 
 # ---------------------------------------------------------
-# E) Diagnóstico
+# E) DiagnÃ³stico
 # ---------------------------------------------------------
 n_total = len(gdf_pts)
 n_nan = int(np.isnan(gdf_pts["densidad_pob_km2"]).sum())
 
-print("\n✅ Resultado CELDA 7")
+print("\nâœ… Resultado CELDA 7")
 print("Filas en gdf_pts:", n_total)
 print("Nodos sin densidad:", n_nan)
 
@@ -1558,7 +1698,7 @@ if n_nan > 0:
     print("\nEjemplos de nodos NaN (primeros 10):")
     print(gdf_pts[gdf_pts["densidad_pob_km2"].isna()][["id_nodo","demanda_kg"]].head(10).to_string(index=False))
 
-# CELDA 8 (V2.1.2): Exportación QGIS (Base + Tramos con De/A) -> varios archivos + densidad poblacional real en clientes
+# CELDA 8 (V2.1.2): ExportaciÃ³n QGIS (Base + Tramos con De/A) -> varios archivos + densidad poblacional real en clientes
 import geopandas as gpd
 from shapely.geometry import Point, LineString
 import numpy as np
@@ -1566,7 +1706,7 @@ import networkx as nx
 import osmnx as ox
 import os
 
-print("--- INICIANDO EXPORTACIÓN A QGIS (V2.1.2) ---")
+print("--- INICIANDO EXPORTACIÃ“N A QGIS (V2.1.2) ---")
 
 # =========================================================
 # Helpers (MultiDiGraph safe)
@@ -1607,7 +1747,7 @@ def path_time_s(G, path):
     return float(t)
 
 def dist_ruteada_m(G, u, v):
-    """Distancia (m) del camino más corto ruteado por travel_time (usa length)."""
+    """Distancia (m) del camino mÃ¡s corto ruteado por travel_time (usa length)."""
     try:
         path = nx.shortest_path(G, u, v, weight="travel_time")
         return path_dist_m(G, path)
@@ -1615,7 +1755,7 @@ def dist_ruteada_m(G, u, v):
         return np.nan
 
 def dist_recoleccion_m(G, nodos_ruta):
-    """Distancia (m) ruta interna recolección (cliente->cliente ruteado por travel_time)."""
+    """Distancia (m) ruta interna recolecciÃ³n (cliente->cliente ruteado por travel_time)."""
     if not nodos_ruta or len(nodos_ruta) < 2:
         return 0.0
     total = 0.0
@@ -1639,10 +1779,10 @@ if "gdf_pts" in globals() and gdf_pts is not None and len(gdf_pts) > 0:
     gdf_dens = gdf_pts[["id_nodo", "densidad_pob_km2", "pob_buffer"]].copy()
     # por si acaso viene como float
     gdf_dens["id_nodo"] = gdf_dens["id_nodo"].astype(int)
-    print("✅ Densidad poblacional detectada desde CELDA 7 (gdf_pts).")
+    print("âœ… Densidad poblacional detectada desde CELDA 7 (gdf_pts).")
 else:
     gdf_dens = None
-    print("⚠️ No encuentro gdf_pts de CELDA 7. Se exportarán clientes SIN densidad poblacional real.")
+    print("âš ï¸ No encuentro gdf_pts de CELDA 7. Se exportarÃ¡n clientes SIN densidad poblacional real.")
 
 # =========================================================
 # 1) CAPAS BASE (archivos separados)
@@ -1670,7 +1810,7 @@ for n in nodos_clientes:
 
 gdf_clientes = gpd.GeoDataFrame(data_clientes, crs="EPSG:4326")
 
-# 👉 Join con densidad poblacional real si existe
+# ðŸ‘‰ Join con densidad poblacional real si existe
 if gdf_dens is not None:
     # merge por id_nodo
     gdf_clientes = gdf_clientes.merge(gdf_dens, on="id_nodo", how="left")
@@ -1696,9 +1836,9 @@ gdf_clave.to_file("base_puntos_clave.gpkg", driver="GPKG")
 print("  -> Guardado: base_puntos_clave.gpkg")
 
 # =========================================================
-# 2) TRAMOS POR CAMIÓN (1 archivo GPKG por camión)
+# 2) TRAMOS POR CAMIÃ“N (1 archivo GPKG por camiÃ³n)
 # =========================================================
-print("\n2) Generando tramos por camión/viaje (un GPKG por camión)...")
+print("\n2) Generando tramos por camiÃ³n/viaje (un GPKG por camiÃ³n)...")
 
 for camion in camiones:
     c_id = camion["id"]
@@ -1759,15 +1899,15 @@ for camion in camiones:
         primer = nodos_ruta[0]
         ultimo = nodos_ruta[-1]
 
-        # Origen del viaje según CELDA 6
-        if viaje["origen"] == "Estación":
+        # Origen del viaje segÃºn CELDA 6
+        if viaje["origen"] == "EstaciÃ³n":
             origen_nodo = id_estacion
-            de_aprox = "Estación"
+            de_aprox = "EstaciÃ³n"
         else:
             origen_nodo = id_relleno
             de_aprox = "Relleno"
 
-        # TRAMO 1: APROXIMACIÓN
+        # TRAMO 1: APROXIMACIÃ“N
         if "origen_nodo" in viaje:
             origen_nodo = int(viaje["origen_nodo"])
             de_aprox = "Estacion" if origen_nodo == id_estacion else "Relleno"
@@ -1781,7 +1921,7 @@ for camion in camiones:
                     "Viaje": i,
                     "Tramo": "Aprox",
                     "De": de_aprox,
-                    "A": "Recolección",
+                    "A": "RecolecciÃ³n",
                     "dur_s": float(viaje["costos"]["aprox_s"]),
                     "dist_m": path_dist_m(G_RUTEO, path),
                     "orden": orden_local,
@@ -1791,7 +1931,7 @@ for camion in camiones:
         except:
             pass
 
-        # TRAMO 2: RECOLECCIÓN
+        # TRAMO 2: RECOLECCIÃ“N
         coords_recol = []
         try:
             for k in range(len(nodos_ruta) - 1):
@@ -1808,8 +1948,8 @@ for camion in camiones:
                     "Camion": c_id,
                     "Viaje": i,
                     "Tramo": "Recol",
-                    "De": "Recolección",
-                    "A": "Recolección",
+                    "De": "RecolecciÃ³n",
+                    "A": "RecolecciÃ³n",
                     "dur_s": float(viaje["costos"]["interno_s"]),
                     "dist_m": dist_recol,
                     "orden": orden_local,
@@ -1828,7 +1968,7 @@ for camion in camiones:
                     "Camion": c_id,
                     "Viaje": i,
                     "Tramo": "Desc",
-                    "De": "Recolección",
+                    "De": "RecolecciÃ³n",
                     "A": "Relleno",
                     "dur_s": float(viaje["costos"]["descarga_s"]),
                     "dist_m": path_dist_m(G_RUTEO, path),
@@ -1852,7 +1992,7 @@ for camion in camiones:
                     "Viaje": "FIN",
                     "Tramo": "Fin",
                     "De": "Relleno",
-                    "A": "Estación",
+                    "A": "EstaciÃ³n",
                     "dur_s": dur_fin,
                     "dist_m": path_dist_m(G_RUTEO, path),
                     "orden": orden_local,
@@ -1869,27 +2009,27 @@ for camion in camiones:
     if features:
         gdf_tramos = gpd.GeoDataFrame(features, crs="EPSG:4326")
         gdf_tramos.to_file(out_gpkg, layer="tramos", driver="GPKG")
-        print(f"  ✅ Camión {c_id}: Guardado {out_gpkg} (layer='tramos', {len(gdf_tramos)} tramos)")
+        print(f"  âœ… CamiÃ³n {c_id}: Guardado {out_gpkg} (layer='tramos', {len(gdf_tramos)} tramos)")
     else:
-        print(f"  ⚠️ Camión {c_id}: No se generaron tramos (features vacío). Revisa viajes.")
+        print(f"  âš ï¸ CamiÃ³n {c_id}: No se generaron tramos (features vacÃ­o). Revisa viajes.")
 
-print("\n✅ ¡PROCESO TERMINADO! Archivos generados:")
+print("\nâœ… Â¡PROCESO TERMINADO! Archivos generados:")
 print("  - base_calles.gpkg")
 print("  - base_clientes.gpkg  (incluye demanda_kg + densidad_pob_km2 + pob_buffer + dist_a_* )")
 print("  - base_puntos_clave.gpkg")
-print("  - rutas_tramos_Camion_X.gpkg (uno por camión)")
+print("  - rutas_tramos_Camion_X.gpkg (uno por camiÃ³n)")
 
-# CELDA 9 (V3.2): Bitácora MACRO por TRAMOS + CSV (con distancias en todos los tramos)
+# CELDA 9 (V3.2): BitÃ¡cora MACRO por TRAMOS + CSV (con distancias en todos los tramos)
 import pandas as pd
 import numpy as np
 import networkx as nx
 
-print("Generando bitácora MACRO por TRAMOS (Estación/Recolección/Relleno/Fin)...")
+print("Generando bitÃ¡cora MACRO por TRAMOS (EstaciÃ³n/RecolecciÃ³n/Relleno/Fin)...")
 
 filas = []
 
 # -------------------------------
-# Helpers MultiDiGraph safe (idénticos a CELDA 8)
+# Helpers MultiDiGraph safe (idÃ©nticos a CELDA 8)
 # -------------------------------
 def best_edge_attr(G, u, v, attr, default=0.0):
     data = G.get_edge_data(u, v)
@@ -1915,7 +2055,7 @@ def path_dist_m(G, path):
     return float(dist)
 
 def dist_km_ruteada(G, u, v):
-    """Distancia (km) del camino más corto ruteado por travel_time."""
+    """Distancia (km) del camino mÃ¡s corto ruteado por travel_time."""
     try:
         path = nx.shortest_path(G, u, v, weight="travel_time")
         return path_dist_m(G, path) / 1000.0
@@ -1924,7 +2064,7 @@ def dist_km_ruteada(G, u, v):
 
 def dist_km_recoleccion(G, nodos_ruta):
     """
-    Distancia (km) de la ruta interna de recolección:
+    Distancia (km) de la ruta interna de recolecciÃ³n:
     suma de caminos (cliente_k -> cliente_{k+1}) ruteados por travel_time.
     """
     if not nodos_ruta or len(nodos_ruta) < 2:
@@ -1941,7 +2081,7 @@ def dist_km_recoleccion(G, nodos_ruta):
 t_fin_s = float(globals().get("t_retorno_casa", np.nan))
 
 # -------------------------------
-# Bitácora por camión (macro-tramos)
+# BitÃ¡cora por camiÃ³n (macro-tramos)
 # -------------------------------
 for camion in camiones:
     c_id = camion["id"]
@@ -1960,14 +2100,14 @@ for camion in camiones:
                 tipo = tramo.get("tipo", "Tramo")
                 es_recol = tipo == "Recol"
                 filas.append({
-                    "Camión": c_id,
+                    "CamiÃ³n": c_id,
                     "Paso": f"V{v_num}-{t_idx}",
                     "Tramo": tipo,
                     "De": tramo.get("de", ""),
                     "A": tramo.get("a", ""),
                     "Nodo_De": int(tramo.get("nodo_de", 0)),
                     "Nodo_A": int(tramo.get("nodo_a", 0)),
-                    "Paradas_en_recolección": int(len(nodos)) if es_recol else 0,
+                    "Paradas_en_recolecciÃ³n": int(len(nodos)) if es_recol else 0,
                     "Carga_kg": float(viaje["carga"]) if es_recol else 0.0,
                     "Dist_km": float(tramo.get("dist_m", 0.0)) / 1000.0,
                     "Min": float(tramo.get("dur_s", 0.0)) / 60.0,
@@ -1978,14 +2118,14 @@ for camion in camiones:
             balance_s = float((viaje.get("costos", {}) or {}).get("balance_turno_s", 0.0))
             if balance_s > 0:
                 filas.append({
-                    "Camión": c_id,
+                    "CamiÃ³n": c_id,
                     "Paso": f"V{v_num}-B",
                     "Tramo": "Balance turno",
                     "De": "Operacion",
                     "A": "Operacion",
                     "Nodo_De": 0,
                     "Nodo_A": 0,
-                    "Paradas_en_recolección": 0,
+                    "Paradas_en_recolecciÃ³n": 0,
                     "Carga_kg": 0.0,
                     "Dist_km": 0.0,
                     "Min": balance_s / 60.0,
@@ -1998,10 +2138,10 @@ for camion in camiones:
         primer = nodos[0]
         ultimo = nodos[-1]
 
-        # TRAMO A: Origen -> Recolección
-        if viaje["origen"] == "Estación":
+        # TRAMO A: Origen -> RecolecciÃ³n
+        if viaje["origen"] == "EstaciÃ³n":
             origen_nodo = id_estacion
-            origen_tipo = "Estación"
+            origen_tipo = "EstaciÃ³n"
         else:
             origen_nodo = id_relleno
             origen_tipo = "Relleno"
@@ -2014,51 +2154,51 @@ for camion in camiones:
         d_aprox_km = dist_km_ruteada(G_RUTEO, origen_nodo, primer)
 
         filas.append({
-            "Camión": c_id,
+            "CamiÃ³n": c_id,
             "Paso": f"V{v_num}-A",
-            "Tramo": "Origen→Recolección",
+            "Tramo": "Origenâ†’RecolecciÃ³n",
             "De": origen_tipo,
-            "A": "Recolección",
+            "A": "RecolecciÃ³n",
             "Nodo_De": int(origen_nodo),
             "Nodo_A": int(primer),
-            "Paradas_en_recolección": 0,
+            "Paradas_en_recolecciÃ³n": 0,
             "Carga_kg": 0.0,
             "Dist_km": d_aprox_km,
             "Min": t_aprox_s / 60.0
         })
 
-        # TRAMO B: Recolección (operación) + distancia interna
+        # TRAMO B: RecolecciÃ³n (operaciÃ³n) + distancia interna
         t_int_s = float(viaje["costos"]["interno_s"])
         d_recol_km = dist_km_recoleccion(G_RUTEO, nodos)
 
         filas.append({
-            "Camión": c_id,
+            "CamiÃ³n": c_id,
             "Paso": f"V{v_num}-B",
-            "Tramo": "Recolección (operación)",
-            "De": "Recolección",
-            "A": "Recolección",
+            "Tramo": "RecolecciÃ³n (operaciÃ³n)",
+            "De": "RecolecciÃ³n",
+            "A": "RecolecciÃ³n",
             "Nodo_De": int(primer),
             "Nodo_A": int(ultimo),
-            "Paradas_en_recolección": int(len(nodos)),
-            "Carga_kg": float(viaje["carga"]),   # ✅ la carga se reporta SOLO aquí
+            "Paradas_en_recolecciÃ³n": int(len(nodos)),
+            "Carga_kg": float(viaje["carga"]),   # âœ… la carga se reporta SOLO aquÃ­
             "Dist_km": d_recol_km,
             "Min": t_int_s / 60.0
         })
 
-        # TRAMO C: Recolección -> Relleno
+        # TRAMO C: RecolecciÃ³n -> Relleno
         t_desc_s = float(viaje["costos"]["descarga_s"])
         d_desc_km = dist_km_ruteada(G_RUTEO, ultimo, id_relleno)
 
         filas.append({
-            "Camión": c_id,
+            "CamiÃ³n": c_id,
             "Paso": f"V{v_num}-C",
-            "Tramo": "Recolección→Relleno",
-            "De": "Recolección",
+            "Tramo": "RecolecciÃ³nâ†’Relleno",
+            "De": "RecolecciÃ³n",
             "A": "Relleno",
             "Nodo_De": int(ultimo),
             "Nodo_A": int(id_relleno),
-            "Paradas_en_recolección": 0,
-            "Carga_kg": 0.0,                   # ✅ NO repetir carga (evita duplicar en resumen)
+            "Paradas_en_recolecciÃ³n": 0,
+            "Carga_kg": 0.0,                   # âœ… NO repetir carga (evita duplicar en resumen)
             "Dist_km": d_desc_km,
             "Min": t_desc_s / 60.0
         })
@@ -2066,18 +2206,18 @@ for camion in camiones:
     if usa_tramos_operativos:
         continue
 
-    # FIN DE TURNO: Relleno -> Estación
+    # FIN DE TURNO: Relleno -> EstaciÃ³n
     d_fin_km = dist_km_ruteada(G_RUTEO, id_relleno, id_estacion)
 
     filas.append({
-        "Camión": c_id,
+        "CamiÃ³n": c_id,
         "Paso": "FIN",
-        "Tramo": "Relleno→Estación (fin turno)",
+        "Tramo": "Rellenoâ†’EstaciÃ³n (fin turno)",
         "De": "Relleno",
-        "A": "Estación",
+        "A": "EstaciÃ³n",
         "Nodo_De": int(id_relleno),
         "Nodo_A": int(id_estacion),
-        "Paradas_en_recolección": 0,
+        "Paradas_en_recolecciÃ³n": 0,
         "Carga_kg": 0.0,
         "Dist_km": d_fin_km,
         "Min": (t_fin_s / 60.0) if np.isfinite(t_fin_s) else np.nan
@@ -2094,27 +2234,27 @@ df_print["Min"] = df_print["Min"].round(1)
 df_print["Carga_kg"] = df_print["Carga_kg"].round(2)
 
 cols = [
-    "Camión","Paso","Tramo","De","A",
-    "Paradas_en_recolección","Carga_kg","Dist_km","Min",
+    "CamiÃ³n","Paso","Tramo","De","A",
+    "Paradas_en_recolecciÃ³n","Carga_kg","Dist_km","Min",
     "Nodo_De","Nodo_A"
 ]
 df_print = df_print[cols]
 
-print("\n=== BITÁCORA MACRO (vista previa, 30 filas) ===")
+print("\n=== BITÃCORA MACRO (vista previa, 30 filas) ===")
 print(df_print.head(30).to_string(index=False))
 
 # CSV completo
 df.to_csv("bitacora_macro_tramos.csv", index=False)
-print("\n✅ Guardado completo: 'bitacora_macro_tramos.csv'")
+print("\nâœ… Guardado completo: 'bitacora_macro_tramos.csv'")
 
 # -------------------------------
-# Resumen por camión (macro)
+# Resumen por camiÃ³n (macro)
 # -------------------------------
-res = df.groupby("Camión").agg({
+res = df.groupby("CamiÃ³n").agg({
     "Carga_kg": "sum",
     "Dist_km": "sum",
     "Min": "sum",
-    "Paradas_en_recolección": "sum"
+    "Paradas_en_recolecciÃ³n": "sum"
 }).reset_index()
 
 res["Horas"] = (res["Min"] / 60.0).round(2)
@@ -2122,18 +2262,18 @@ res["Dist_km"] = res["Dist_km"].round(2)
 res["Min"] = res["Min"].round(1)
 res["Carga_kg"] = res["Carga_kg"].round(2)
 
-print("\n=== RESUMEN POR CAMIÓN (MACRO) ===")
-print(res[["Camión","Carga_kg","Dist_km","Min","Horas","Paradas_en_recolección"]].to_string(index=False))
+print("\n=== RESUMEN POR CAMIÃ“N (MACRO) ===")
+print(res[["CamiÃ³n","Carga_kg","Dist_km","Min","Horas","Paradas_en_recolecciÃ³n"]].to_string(index=False))
 
 # -------------------------------
 # Resumen GLOBAL (estilo PDF)
 # -------------------------------
 total_camiones = len(set(c.get("vehiculo_id", c.get("id", None)) for c in camiones))
-total_servicios = int(res["Camión"].nunique())
+total_servicios = int(res["CamiÃ³n"].nunique())
 total_ton = float(res["Carga_kg"].sum() / 1000.0)
 total_km = float(res["Dist_km"].sum())
 total_h = float(res["Horas"].sum())
-total_paradas = int(res["Paradas_en_recolección"].sum())
+total_paradas = int(res["Paradas_en_recolecciÃ³n"].sum())
 
 print("\n=== RESUMEN GLOBAL (FLOTA) ===")
 print(f"Camiones usados: {total_camiones}")
@@ -2141,7 +2281,7 @@ print(f"Servicios/turnos: {total_servicios}")
 print(f"Basura total: {total_ton:.2f} ton")
 print(f"Distancia total: {total_km:.2f} km")
 print(f"Tiempo total flota: {total_h:.2f} h")
-print(f"Paradas totales (recolección): {total_paradas}")
+print(f"Paradas totales (recolecciÃ³n): {total_paradas}")
 
 # Opcional: consumo/costo como en el PDF (ajusta a tu supuesto)
 KM_POR_GALON = RENDIMIENTO_KM_GAL
@@ -2179,7 +2319,7 @@ df_comparacion_operativa.to_csv("comparacion_operativa.csv", index=False, encodi
 print("\n=== COMPARACION OPERATIVA VS BASE BRYAN ===")
 display(df_comparacion_operativa.round(2))
 
-# CELDA 9 (FIX): HTML Leaflet animado (capas + camiones 🚚 + velocidad) SIN f-string
+# CELDA 9 (FIX): HTML Leaflet animado (capas + camiones ðŸšš + velocidad) SIN f-string
 import geopandas as gpd
 import json
 import os
@@ -2217,7 +2357,7 @@ def leer_capa_gpkg(path, layer=None):
     try:
         return gpd.read_file(path, layer=layer) if layer else gpd.read_file(path)
     except Exception as e:
-        print(f"⚠️ No pude leer {path} ({e})")
+        print(f"âš ï¸ No pude leer {path} ({e})")
         return None
 
 
@@ -2276,7 +2416,7 @@ sectores_geojson = {"type": "FeatureCollection", "features": sectores_features}
 
 
 # -----------------------------
-# 2) Leer rutas por camión y convertir a lista de [lat, lon]
+# 2) Leer rutas por camiÃ³n y convertir a lista de [lat, lon]
 # -----------------------------
 rutas_camiones = {}
 
@@ -2285,7 +2425,7 @@ for c in CAMIONES:
     gdf_tramos = leer_capa_gpkg(path, layer=LAYER_TRAMOS)
 
     if gdf_tramos is None or len(gdf_tramos) == 0:
-        print(f"⚠️ Camión {c}: sin tramos")
+        print(f"âš ï¸ CamiÃ³n {c}: sin tramos")
         rutas_camiones[c] = []
         continue
 
@@ -2314,7 +2454,7 @@ for c in CAMIONES:
             coords += latlon
 
     rutas_camiones[c] = coords
-    print(f"✅ Camión {c}: {len(coords)} puntos de ruta")
+    print(f"âœ… CamiÃ³n {c}: {len(coords)} puntos de ruta")
 
 
 # -----------------------------
@@ -2328,6 +2468,7 @@ metricas_html = {
         "viajes_asignados": int(sum(len(c.get("viajes", [])) for c in camiones)),
         "clientes": int(len(nodos_clientes)) if "nodos_clientes" in globals() else 0,
         "carga_total_kg": float(sum(sum(float(v.get("carga", 0.0)) for v in c.get("viajes", [])) for c in camiones)),
+        "capacidad_camion_kg": float(CAPACIDAD_MAXIMA_KG),
         "tiempo_total_h": float(sum(float(c.get("tiempo_total_h", 0.0)) for c in camiones)),
     },
     "camiones": [],
@@ -2354,6 +2495,7 @@ for c in camiones:
         "descarga": c.get("descarga", ""),
         "viajes": len(viajes),
         "carga_kg": carga,
+        "capacidad_kg": float(CAPACIDAD_MAXIMA_KG),
         "paradas": int(sum(len(v.get("nodos", []) or []) for v in viajes)),
         "distancia_km": distancia_m / 1000.0,
         "tiempo_h": float(c.get("tiempo_total_h", 0.0)),
@@ -2373,6 +2515,7 @@ for c in camiones:
             "origen": v.get("origen", "N/A"),
             "paradas": int(len(v.get("nodos", []) or [])),
             "carga_kg": float(v.get("carga", 0.0)),
+            "capacidad_kg": float(CAPACIDAD_MAXIMA_KG),
             "descarga_previa_km": float(dist.get("descarga_previa_m", 0.0)) / 1000.0,
             "aprox_km": float(dist.get("aprox_m", 0.0)) / 1000.0,
             "recoleccion_km": float(dist.get("recoleccion_m", 0.0)) / 1000.0,
@@ -2582,15 +2725,15 @@ html = """<!DOCTYPE html>
   <p class="panel-title">Operacion urbana</p>
   <h1 class="headline">Servicios por turno de recoleccion</h1>
   <div class="row">
-    <button id="btnPlay" class="btn">▶ Reproducir</button>
-    <button id="btnPause" class="btn" style="background:#6b7280;">⏸ Pausa</button>
-    <button id="btnReset" class="btn" style="background:#0ea5e9;">↺ Reiniciar</button>
+    <button id="btnPlay" class="btn">â–¶ Reproducir</button>
+    <button id="btnPause" class="btn" style="background:#6b7280;">â¸ Pausa</button>
+    <button id="btnReset" class="btn" style="background:#0ea5e9;">â†º Reiniciar</button>
   </div>
 
   <div class="row">
     <label><b>Velocidad</b>:</label>
     <input id="speed" type="range" min="0.25" max="6" step="0.25" value="1.5">
-    <span id="speedVal" class="small">1.5×</span>
+    <span id="speedVal" class="small">1.5Ã—</span>
   </div>
 
   <div class="metric-grid" id="globalMetrics"></div>
@@ -2661,7 +2804,7 @@ html = """<!DOCTYPE html>
         `<b>Cliente</b><br>` +
         `Nodo: ${(p.id_nodo !== undefined && p.id_nodo !== null) ? p.id_nodo : "-"}<br>` +
         `Demanda: ${(p.demanda_kg !== undefined && p.demanda_kg !== null) ? p.demanda_kg : "-"} kg<br>` +
-        `Densidad: ${dens} hab/km²`
+        `Densidad: ${dens} hab/kmÂ²`
       );
     }
   });
@@ -2724,6 +2867,15 @@ html = """<!DOCTYPE html>
     return `<div class="metric"><span class="label">${label}</span><span class="value">${value}</span></div>`;
   }
 
+  function capacidadTon(item) {
+    return Number((item && item.capacidad_kg) || (METRICAS.global && METRICAS.global.capacidad_camion_kg) || 12000) / 1000;
+  }
+
+  function cargaTon(item) {
+    const carga = Number((item && item.carga_kg) || 0) / 1000;
+    return Math.min(carga, capacidadTon(item));
+  }
+
   function renderDashboard() {
     const global = METRICAS.global || {};
     const totalKm = (METRICAS.camiones || []).reduce((acc, c) => acc + (c.distancia_km || 0), 0);
@@ -2741,20 +2893,23 @@ html = """<!DOCTYPE html>
     if (cards) {
       cards.innerHTML = (METRICAS.camiones || []).map(c => {
         const color = colores[String(c.id)] || "#111827";
+        const carga = cargaTon(c);
+        const capacidad = capacidadTon(c);
+        const cargaPct = capacidad > 0 ? Math.min(100, (carga / capacidad) * 100) : 0;
         return `
           <article class="truck-card" id="truckCard-${c.id}" style="color:${color}">
             <div class="truck-top">
               <div class="truck-name"><span class="swatch" style="background:${color}"></span>Servicio ${c.id}</div>
               <span class="pill">Vehiculo ${c.vehiculo || "-"}</span>
             </div>
-            <div class="small" style="margin:-4px 0 8px;">Turno ${c.turno || "-"} · ${c.horario || "-"} · ${c.descarga === "fin" ? "descarga al final" : "descarga al inicio"}</div>
+            <div class="small" style="margin:-4px 0 8px;">Turno ${c.turno || "-"} Â· ${c.horario || "-"} Â· ${c.descarga === "fin" ? "descarga al final" : "descarga al inicio"}</div>
             <div class="stat-line">
               <div><b>${fmt.format(c.tiempo_h || 0)}</b><span>h turno</span></div>
               <div><b>${fmt0.format(c.paradas || 0)}</b><span>paradas</span></div>
               <div><b>${fmt.format(c.distancia_km || 0)}</b><span>km</span></div>
             </div>
-            <div class="progress" style="--p:${Math.min(100, c.uso_jornada_pct || 0)}%"><i></i></div>
-            <div class="small" style="margin-top:7px;">Carga: ${fmt.format((c.carga_kg || 0) / 1000)} t · Uso jornada: ${fmt.format(c.uso_jornada_pct || 0)}%</div>
+            <div class="progress" style="--p:${cargaPct}%"><i></i></div>
+            <div class="small" style="margin-top:7px;">Capacidad: ${fmt.format(capacidad)} t - Carga asignada: ${fmt.format(carga)} t - Uso carga: ${fmt.format(cargaPct)}%</div>
           </article>
         `;
       }).join("");
@@ -2771,7 +2926,8 @@ html = """<!DOCTYPE html>
           out.push(`<tr data-camion="${c}">${base}<td>Descarga inicial Estacion -> Relleno</td><td>${fmt.format(v.descarga_previa_km || 0)}</td><td>${fmt.format(v.descarga_previa_min || 0)}</td></tr>`);
         }
         out.push(`<tr data-camion="${c}">${base}<td>Aproximacion desde ${v.origen}</td><td>${fmt.format(v.aprox_km || 0)}</td><td>${fmt.format(v.aprox_min || 0)}</td></tr>`);
-        out.push(`<tr data-camion="${c}">${base}<td>Recoleccion (${fmt0.format(v.paradas || 0)} paradas)</td><td>${fmt.format(v.recoleccion_km || 0)}</td><td>${fmt.format(v.recoleccion_min || 0)}</td></tr>`);
+        const cargaTxt = `${fmt.format(cargaTon(v))} / ${fmt.format(capacidadTon(v))} t`;
+        out.push(`<tr data-camion="${c}">${base}<td>Recoleccion (${fmt0.format(v.paradas || 0)} paradas, ${cargaTxt})</td><td>${fmt.format(v.recoleccion_km || 0)}</td><td>${fmt.format(v.recoleccion_min || 0)}</td></tr>`);
         if ((v.descarga_km || 0) > 0 || (v.descarga_min || 0) > 0) {
           out.push(`<tr data-camion="${c}">${base}<td>Descarga final en relleno</td><td>${fmt.format(v.descarga_km || 0)}</td><td>${fmt.format(v.descarga_min || 0)}</td></tr>`);
         }
@@ -2816,7 +2972,7 @@ html = """<!DOCTYPE html>
   }
 
   // -----------------------
-  // Animación 🚚
+  // AnimaciÃ³n ðŸšš
   // -----------------------
   function haversineMeters(a, b) {
     const R = 6371000;
@@ -2853,7 +3009,7 @@ html = """<!DOCTYPE html>
     return [a[0] + (b[0]-a[0]) * t, a[1] + (b[1]-a[1]) * t];
   }
 
-  // Crear un camión por ruta
+  // Crear un camiÃ³n por ruta
   const trucks = [];
   const truckByRoute = {};
   Object.keys(RUTAS).forEach(k => {
@@ -2862,7 +3018,7 @@ html = """<!DOCTYPE html>
 
     const icon = L.divIcon({
       className: '',
-      html: `<div class="truck-icon">🚚</div>`,
+      html: `<div class="truck-icon">ðŸšš</div>`,
       html: `<div class="truck-icon">S${k}</div>`,
       iconSize: [22,22],
       iconAnchor: [11,11]
@@ -2944,7 +3100,7 @@ html = """<!DOCTYPE html>
     return parseFloat(document.getElementById("speedPremium").value || "1");
   }
 
-  // velocidad base de animación (m/s)
+  // velocidad base de animaciÃ³n (m/s)
   const BASE_MPS = 40.0;
 
   function tick(ts) {
@@ -2973,7 +3129,7 @@ html = """<!DOCTYPE html>
   speed.addEventListener("input", () => {
     speedVal.textContent = `${speed.value}x`;
     return;
-    speedVal.textContent = `${speed.value}×`;
+    speedVal.textContent = `${speed.value}Ã—`;
   });
 
   const leftPanel = document.getElementById("leftPanelPremium");
@@ -3030,10 +3186,10 @@ html = html.replace("__CENTRO_LON__", str(centro_lon))
 with open(OUT_HTML, "w", encoding="utf-8") as f:
     f.write(html)
 
-print(f"✅ HTML generado: {OUT_HTML}")
-print("   Ábrelo en tu navegador (doble click).")
+print(f"âœ… HTML generado: {OUT_HTML}")
+print("   Ãbrelo en tu navegador (doble click).")
 
-# CELDA KPI (SOLO COLAB): Estadísticas + KPIs (por viaje / por camión / global) mostrando tablas
+# CELDA KPI (SOLO COLAB): EstadÃ­sticas + KPIs (por viaje / por camiÃ³n / global) mostrando tablas
 import pandas as pd
 import numpy as np
 
@@ -3059,7 +3215,7 @@ def gini_coefficient(x):
     g = (n + 1 - 2 * np.sum(cum) / cum[-1]) / n
     return float(g)
 
-print("📊 Generando KPIs (modo Colab)...")
+print("ðŸ“Š Generando KPIs (modo Colab)...")
 
 # =========================================================
 # 0) Dataframe por NODO (basura + densidad si existe CELDA 7)
@@ -3147,7 +3303,7 @@ for c in camiones:
 df_viajes = pd.DataFrame(filas_viajes)
 
 # =========================================================
-# 2) KPIs por CAMIÓN
+# 2) KPIs por CAMIÃ“N
 # =========================================================
 df_camiones = pd.DataFrame([{
     "camion": c.get("id", None),
@@ -3216,7 +3372,7 @@ if hay_densidad:
 # 4) Mostrar (Colab)
 # =========================================================
 print("\n======================")
-print("✅ KPI GLOBAL")
+print("âœ… KPI GLOBAL")
 print("======================")
 print(f"Camiones usados: {n_camiones}")
 print(f"Servicios/turnos asignados: {n_servicios}")
@@ -3231,19 +3387,19 @@ print(f"Diesel estimado: {galones_estimados:,.2f} gal | Costo: ${costo_diesel_us
 print(f"Costo nomina mensual flota: ${costo_nomina_mensual_usd:,.2f}")
 print(f"Gini de basura: {gini_demanda:.3f}")
 if hay_densidad:
-    print(f"Correlación basura vs densidad poblacional: {corr_dens_dem:.3f}")
+    print(f"CorrelaciÃ³n basura vs densidad poblacional: {corr_dens_dem:.3f}")
 else:
-    print("Densidad poblacional: no detectada (gdf_pts no está o no tiene densidad_pob_km2).")
+    print("Densidad poblacional: no detectada (gdf_pts no estÃ¡ o no tiene densidad_pob_km2).")
 
 print("\n======================")
-print("🚛 KPI POR CAMIÓN")
+print("ðŸš› KPI POR CAMIÃ“N")
 print("======================")
 display(
     df_camiones.sort_values("camion").round(2)
 )
 
 print("\n======================")
-print("🧾 KPI POR VIAJE (top 20 más largos por tiempo)")
+print("ðŸ§¾ KPI POR VIAJE (top 20 mÃ¡s largos por tiempo)")
 print("======================")
 if len(df_viajes) > 0:
     display(
@@ -3253,13 +3409,13 @@ else:
     print("No hay viajes en df_viajes.")
 
 print("\n======================")
-print("🔥 Hotspots por basura (top 15 nodos)")
+print("ðŸ”¥ Hotspots por basura (top 15 nodos)")
 print("======================")
 display(df_nodos.sort_values("demanda_kg", ascending=False).head(15))
 
 if hay_densidad:
     print("\n======================")
-    print("🏙️ Hotspots por densidad poblacional (top 15 nodos)")
+    print("ðŸ™ï¸ Hotspots por densidad poblacional (top 15 nodos)")
     print("======================")
     display(df_nodos.sort_values("densidad_pob_km2", ascending=False).head(15))
 
@@ -3267,4 +3423,4 @@ html_salida = Path("rutas_animadas.html").resolve()
 if html_salida.exists():
     print(f"HTML listo para abrir en local: {html_salida}")
 else:
-    print("⚠️ No se encontró rutas_animadas.html al final del proceso.")
+    print("âš ï¸ No se encontrÃ³ rutas_animadas.html al final del proceso.")
