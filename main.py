@@ -9,7 +9,7 @@ from shapely.validation import explain_validity
 from pyproj import CRS
 from pathlib import Path
 
-CAPACIDAD_MAXIMA_CAMION_KG = 14000.0
+CAPACIDAD_MAXIMA_CAMION_KG = 12000.0
 NUM_VEHICULOS_MAX = 10
 HORAS_TRABAJO_MIN_H = 6.0
 HORAS_TRABAJO_H = 8.0
