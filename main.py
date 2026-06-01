@@ -24,8 +24,10 @@ VELOCIDAD_RECOLECCION_KMH = 10.0
 VELOCIDAD_TRANSPORTE_KMH = 40.0
 VELOCIDAD_RETORNO_KMH = 50.0
 TOTAL_PESO_PESADO_TON = 120.0
-TOTAL_PESO_LIGERO_TON = 60.0
+TOTAL_PESO_LIGERO_TON = 0.0
 TOTAL_BASURA_KG = (TOTAL_PESO_PESADO_TON + TOTAL_PESO_LIGERO_TON) * 1000.0
+ESCENARIO_COMPACTADO_TON = 120.0
+ESCENARIO_COMPACTADO_KG = ESCENARIO_COMPACTADO_TON * 1000.0
 PRECIO_DIESEL_USD_GAL = 2.99
 RENDIMIENTO_KM_GAL = 4.5
 PESO_BASURA_NODOS_RESTAURANTES = 8.0
@@ -375,8 +377,7 @@ for _, row in gdf_compactados.iterrows():
         continue
     if nodo in G.nodes and demanda > 0:
         nodos_compactados.append(nodo)
-        dict_demandas_compactadas[nodo] = round(demanda, 2)
-        G.nodes[nodo]["demanda_kg"] = round(demanda, 2)
+        dict_demandas_compactadas[nodo] = demanda
         if "clientes_agrupados" in row:
             try:
                 G.nodes[nodo]["clientes_agrupados"] = int(row["clientes_agrupados"])
@@ -386,11 +387,35 @@ for _, row in gdf_compactados.iterrows():
 if not nodos_compactados:
     raise ValueError("La capa clientes del pipeline no contiene clientes compactados utilizables.")
 
+demanda_compactada_base_kg = sum(dict_demandas_compactadas.values())
+factor_escenario_compactado = (
+    ESCENARIO_COMPACTADO_KG / demanda_compactada_base_kg
+    if demanda_compactada_base_kg > 0
+    else 1.0
+)
+dict_demandas_compactadas = {
+    nodo: round(demanda * factor_escenario_compactado, 2)
+    for nodo, demanda in dict_demandas_compactadas.items()
+}
+residual_compactado = round(ESCENARIO_COMPACTADO_KG - sum(dict_demandas_compactadas.values()), 2)
+if abs(residual_compactado) >= 0.01 and dict_demandas_compactadas:
+    nodo_ajuste = max(dict_demandas_compactadas, key=dict_demandas_compactadas.get)
+    dict_demandas_compactadas[nodo_ajuste] = round(
+        dict_demandas_compactadas[nodo_ajuste] + residual_compactado,
+        2,
+    )
+
+for nodo, demanda in dict_demandas_compactadas.items():
+    G.nodes[nodo]["demanda_kg"] = demanda
+
 nodos_clientes = nodos_compactados
 dict_demandas = dict_demandas_compactadas
 
 print("\n--- CLIENTES COMPACTADOS DEL PIPELINE ---")
 print(f"Clientes compactados usados: {len(nodos_clientes)}")
+print(f"Demanda compactada base pipeline: {demanda_compactada_base_kg:.2f} kg")
+print(f"Escenario compactado objetivo: {ESCENARIO_COMPACTADO_KG:.2f} kg")
+print(f"Factor escala escenario: {factor_escenario_compactado:.4f}")
 print(f"Demanda compactada total: {sum(dict_demandas.values()):.2f} kg")
 
 # CELDA 3 (COINCIDE CON CELDA 6): Matriz OD DISTANCIAS (m) + helpers de TIEMPO por tramo
@@ -795,6 +820,7 @@ PARAMETROS_OPERATIVOS = {
     "num_vehiculos": NUM_VEHICULOS_MAX,
     "capacidad_max_kg": CAPACIDAD_MAXIMA_CAMION_KG,
     "capacidad_min_kg": 0.0,
+    "escenario_compactado_ton": ESCENARIO_COMPACTADO_TON,
     "velocidad_acercamiento_kmh": VELOCIDAD_ACERCAMIENTO_KMH,
     "velocidad_recoleccion_kmh": VELOCIDAD_RECOLECCION_KMH,
     "velocidad_transporte_kmh": VELOCIDAD_TRANSPORTE_KMH,
@@ -843,13 +869,15 @@ V_ULTIMO_A_DEPOSITO = PARAMETROS_OPERATIVOS["velocidad_transporte_kmh"]
 V_DEPOSITO_A_EST = PARAMETROS_OPERATIVOS["velocidad_retorno_kmh"]
 PESO_AHORRO_DIST = 0.60
 PESO_AHORRO_TIEMPO = 0.40
-NUM_ZONAS_CLUSTER = max(
+ZONAS_POR_CAPACIDAD = max(
     1,
     min(
         NUM_VEHICULOS,
         int(np.ceil(sum(float(v) for v in dict_demandas.values()) / CAPACIDAD_MAXIMA_KG)),
     ),
 )
+K_CLUSTER_MIN_FACTOR = 0.50
+MIN_UTILIZACION_VIAJE_KG = 0.60 * CAPACIDAD_MAXIMA_KG
 
 def distancia_ruta_interna_m(camino, dist_matriz, idx):
     total = 0.0
@@ -1035,6 +1063,96 @@ def ejecutar_clarke_wright_optimizado(nodos_clientes, dict_demanda, dist_matriz,
 
     return rutas_finales, zonas, mejora_total_2opt_m
 
+def cargas_estimadas_por_capacidad(rutas, dict_demanda, capacidad_kg):
+    cargas = []
+    for ruta in rutas:
+        carga_actual = 0.0
+        for nodo in ruta.get("camino", []):
+            demanda = float(dict_demanda.get(nodo, 0.0))
+            if demanda <= 0:
+                continue
+            if demanda > capacidad_kg:
+                if carga_actual > 0:
+                    cargas.append(carga_actual)
+                    carga_actual = 0.0
+                restante = demanda
+                while restante > 0:
+                    carga_parcial = min(restante, capacidad_kg)
+                    cargas.append(carga_parcial)
+                    restante = round(restante - carga_parcial, 2)
+                continue
+            if carga_actual + demanda > capacidad_kg:
+                if carga_actual > 0:
+                    cargas.append(carga_actual)
+                carga_actual = demanda
+            else:
+                carga_actual += demanda
+        if carga_actual > 0:
+            cargas.append(carga_actual)
+    return cargas
+
+def candidatos_k_zonas(zonas_por_capacidad, num_vehiculos):
+    k_min = max(1, int(np.floor(zonas_por_capacidad * K_CLUSTER_MIN_FACTOR)))
+    k_max = max(k_min, min(num_vehiculos, zonas_por_capacidad))
+    candidatos = set(range(k_min, k_max + 1))
+    candidatos.add(zonas_por_capacidad)
+    candidatos.add(max(1, int(round(zonas_por_capacidad * 0.75))))
+    candidatos.add(max(1, int(round(zonas_por_capacidad * 0.60))))
+    return sorted(k for k in candidatos if 1 <= k <= num_vehiculos)
+
+def seleccionar_k_zonas(nodos_clientes, dict_demanda, dist_matriz, idx, estacion_id, deposito_id):
+    candidatos = candidatos_k_zonas(ZONAS_POR_CAPACIDAD, NUM_VEHICULOS)
+    evaluaciones = []
+
+    for k in candidatos:
+        rutas_k, zonas_k, mejora_k_m = ejecutar_clarke_wright_optimizado(
+            nodos_clientes=nodos_clientes,
+            dict_demanda=dict_demanda,
+            dist_matriz=dist_matriz,
+            idx=idx,
+            estacion_id=estacion_id,
+            deposito_id=deposito_id,
+            num_zonas=k,
+        )
+        metricas_k = metricas_rutas(rutas_k, dist_matriz, idx, estacion_id, deposito_id)
+        cargas_k = cargas_estimadas_por_capacidad(rutas_k, dict_demanda, CAPACIDAD_MAXIMA_KG)
+        cargas_arr = np.array(cargas_k, dtype=float) if cargas_k else np.array([0.0])
+        baja_carga = cargas_arr[cargas_arr < MIN_UTILIZACION_VIAJE_KG]
+        evaluaciones.append({
+            "k": int(k),
+            "zonas": len(zonas_k),
+            "rutas_cw": int(metricas_k["rutas"]),
+            "viajes_estimados_capacidad": int(len(cargas_k)),
+            "viajes_baja_carga": int(len(baja_carga)),
+            "pct_viajes_baja_carga": float(len(baja_carga) / len(cargas_k)) if cargas_k else 0.0,
+            "carga_min_t": float(cargas_arr.min() / 1000.0),
+            "carga_prom_t": float(cargas_arr.mean() / 1000.0),
+            "cv_carga": float(cargas_arr.std() / cargas_arr.mean()) if cargas_arr.mean() > 0 else 0.0,
+            "distancia_km": float(metricas_k["distancia_km"]),
+            "tiempo_h": float(metricas_k["tiempo_h"]),
+            "kg_por_km": float(metricas_k["kg_por_km"]) if np.isfinite(metricas_k["kg_por_km"]) else np.nan,
+            "mejora_2opt_km": float(mejora_k_m / 1000.0),
+            "rutas": rutas_k,
+            "zonas_dict": zonas_k,
+            "mejora_2opt_m": mejora_k_m,
+        })
+
+    df_k = pd.DataFrame([{k: v for k, v in ev.items() if k not in {"rutas", "zonas_dict"}} for ev in evaluaciones])
+    for col in ["distancia_km", "tiempo_h", "viajes_estimados_capacidad"]:
+        minimo = df_k[col].min()
+        df_k[f"{col}_rel"] = df_k[col] / minimo if minimo > 0 else 1.0
+    df_k["score_k"] = (
+        0.25 * df_k["distancia_km_rel"]
+        + 0.10 * df_k["tiempo_h_rel"]
+        + 0.20 * df_k["viajes_estimados_capacidad_rel"]
+        + 0.35 * df_k["pct_viajes_baja_carga"]
+        + 0.10 * df_k["cv_carga"]
+    )
+    df_k = df_k.sort_values(["score_k", "viajes_baja_carga", "distancia_km"]).reset_index(drop=True)
+    k_elegido = int(df_k.iloc[0]["k"])
+    elegido = next(ev for ev in evaluaciones if int(ev["k"]) == k_elegido)
+    return elegido, df_k
+
 rutas_base_bryan = ejecutar_clarke_wright_dist(
     nodos_clientes=nodos_clientes,
     dict_demanda=dict_demandas,
@@ -1045,17 +1163,21 @@ rutas_base_bryan = ejecutar_clarke_wright_dist(
 )
 
 metricas_base = metricas_rutas(rutas_base_bryan, dist_m, idx, estacion, deposito)
-print(f"Zonas cluster por capacidad: {NUM_ZONAS_CLUSTER}")
+print(f"Zonas por capacidad estricta: {ZONAS_POR_CAPACIDAD}")
 
-rutas_clarke_wright, zonas_hibridas, mejora_2opt_m = ejecutar_clarke_wright_optimizado(
+seleccion_k, df_comparacion_k_zonas = seleccionar_k_zonas(
     nodos_clientes=nodos_clientes,
     dict_demanda=dict_demandas,
     dist_matriz=dist_m,
     idx=idx,
     estacion_id=estacion,
     deposito_id=deposito,
-    num_zonas=NUM_ZONAS_CLUSTER,
 )
+NUM_ZONAS_CLUSTER = int(seleccion_k["k"])
+rutas_clarke_wright = seleccion_k["rutas"]
+zonas_hibridas = seleccion_k["zonas_dict"]
+mejora_2opt_m = float(seleccion_k["mejora_2opt_m"])
+df_comparacion_k_zonas.to_csv("comparacion_k_zonas.csv", index=False, encoding="utf-8-sig")
 
 metricas_hibrido = metricas_rutas(rutas_clarke_wright, dist_m, idx, estacion, deposito)
 df_comparacion_algoritmos = pd.DataFrame([
@@ -1077,7 +1199,10 @@ df_comparacion_algoritmos.to_csv("comparacion_algoritmos.csv", index=False, enco
 print("\n======================")
 print("COMPARACION CLARKE & WRIGHT")
 print("======================")
-print(f"Zonas iniciales por clustering/capacidad: {len(zonas_hibridas)}")
+print("\nSeleccion automatica de k para clustering:")
+display(df_comparacion_k_zonas.round(3))
+print(f"k elegido: {NUM_ZONAS_CLUSTER} zonas")
+print(f"Zonas iniciales por clustering optimizado: {len(zonas_hibridas)}")
 print(f"Rutas generadas por Clarke & Wright zonal: {len(rutas_clarke_wright)}")
 print(f"Mejora interna por 2-opt: {mejora_2opt_m/1000:.2f} km")
 display(df_comparacion_algoritmos.round(2))
@@ -2454,7 +2579,7 @@ CAMIONES = [int(c["id"]) for c in camiones] if "camiones" in globals() and camio
 RUTA_GPKG_FMT = "rutas_tramos_Camion_{}.gpkg"
 LAYER_TRAMOS = "tramos"
 
-OUT_HTML = "rutas_animadas.html"
+OUT_HTML = "rutas_animadas_120t.html"
 
 
 # -----------------------------
@@ -3622,8 +3747,8 @@ if hay_densidad:
     print("======================")
     display(df_nodos.sort_values("densidad_pob_km2", ascending=False).head(15))
 
-html_salida = Path("rutas_animadas.html").resolve()
+html_salida = Path(OUT_HTML).resolve()
 if html_salida.exists():
     print(f"HTML listo para abrir en local: {html_salida}")
 else:
-    print("âš ï¸ No se encontrÃ³ rutas_animadas.html al final del proceso.")
+    print(f"âš ï¸ No se encontrÃ³ {OUT_HTML} al final del proceso.")
