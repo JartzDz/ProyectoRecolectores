@@ -17,6 +17,7 @@ NUMERO_RECOLECTORES_CAMION = 3
 NUMERO_CHOFER_CAMION = 1
 SUELDO_RECOLECTORES_USD = 665.0
 SUELDO_CHOFER_USD = 801.0
+HORAS_NOMINA_MENSUAL = 160.0
 TIEMPO_PARADA_SEG = 30.0
 VELOCIDAD_ACERCAMIENTO_KMH = 50.0
 VELOCIDAD_RECOLECCION_KMH = 10.0
@@ -804,6 +805,7 @@ PARAMETROS_OPERATIVOS = {
     "obreros_min": 3,
     "sueldo_recolector_usd": SUELDO_RECOLECTORES_USD,
     "sueldo_chofer_usd": SUELDO_CHOFER_USD,
+    "horas_nomina_mensual": HORAS_NOMINA_MENSUAL,
     "precio_diesel_usd_gal": PRECIO_DIESEL_USD_GAL,
     "rendimiento_km_gal": RENDIMIENTO_KM_GAL,
     "horario_inicio": "06:00",
@@ -2396,9 +2398,17 @@ KM_POR_GALON = RENDIMIENTO_KM_GAL
 COSTO_POR_GALON = PRECIO_DIESEL_USD_GAL
 if total_km > 0 and KM_POR_GALON > 0:
     gal = total_km / KM_POR_GALON
-    costo = gal * COSTO_POR_GALON
+    costo_diesel = gal * COSTO_POR_GALON
+    costo_laboral_hora_camion = (
+        NUMERO_RECOLECTORES_CAMION * SUELDO_RECOLECTORES_USD
+        + NUMERO_CHOFER_CAMION * SUELDO_CHOFER_USD
+    ) / HORAS_NOMINA_MENSUAL
+    costo_laboral = total_h * costo_laboral_hora_camion
+    costo_operativo = costo_diesel + costo_laboral
     print(f"Consumo estimado: {gal:.2f} gal")
-    print(f"Costo estimado: ${costo:.2f}")
+    print(f"Costo diesel: ${costo_diesel:.2f}")
+    print(f"Costo laboral proporcional: ${costo_laboral:.2f}")
+    print(f"Costo operativo: ${costo_operativo:.2f}")
     print(f"Eficiencia: {(total_ton/total_km):.4f} ton/km")
 
 BASE_BRYAN_HISTORICO = {
@@ -2625,6 +2635,12 @@ costo_diesel_html_usd = (
     if distancia_total_html_km > 0 and RENDIMIENTO_KM_GAL > 0
     else 0.0
 )
+costo_laboral_hora_camion_html_usd = (
+    NUMERO_RECOLECTORES_CAMION * SUELDO_RECOLECTORES_USD
+    + NUMERO_CHOFER_CAMION * SUELDO_CHOFER_USD
+) / HORAS_NOMINA_MENSUAL
+costo_laboral_html_usd = tiempo_total_html_h * costo_laboral_hora_camion_html_usd
+costo_operativo_html_usd = costo_diesel_html_usd + costo_laboral_html_usd
 eficiencia_html_ton_km = (
     (carga_total_html_kg / 1000.0) / distancia_total_html_km
     if distancia_total_html_km > 0
@@ -2644,6 +2660,9 @@ metricas_html = {
         "eficiencia_ton_km": eficiencia_html_ton_km,
         "tiempo_total_h": tiempo_total_html_h,
         "costo_diesel_usd": costo_diesel_html_usd,
+        "costo_laboral_usd": costo_laboral_html_usd,
+        "costo_operativo_usd": costo_operativo_html_usd,
+        "costo_laboral_hora_camion_usd": costo_laboral_hora_camion_html_usd,
     },
     "camiones": [],
     "viajes": [],
@@ -2661,6 +2680,14 @@ for c in camiones:
         sum(float(x or 0.0) for x in (v.get("costos", {}) or {}).values())
         for v in viajes
         ))
+    distancia_km = distancia_m / 1000.0
+    tiempo_h = float(c.get("tiempo_total_h", 0.0))
+    costo_diesel_camion_usd = (
+        distancia_km / RENDIMIENTO_KM_GAL * PRECIO_DIESEL_USD_GAL
+        if distancia_km > 0 and RENDIMIENTO_KM_GAL > 0
+        else 0.0
+    )
+    costo_laboral_camion_usd = tiempo_h * costo_laboral_hora_camion_html_usd
     metricas_html["camiones"].append({
         "id": c_id,
         "vehiculo": int(c.get("vehiculo_id", c_id)),
@@ -2670,10 +2697,13 @@ for c in camiones:
         "carga_kg": carga,
         "carga_max_viaje_kg": float(max([float(v.get("carga", 0.0)) for v in viajes] + [0.0])),
         "capacidad_kg": float(CAPACIDAD_MAXIMA_KG),
-        "distancia_km": distancia_m / 1000.0,
-        "tiempo_h": float(c.get("tiempo_total_h", 0.0)),
+        "distancia_km": distancia_km,
+        "tiempo_h": tiempo_h,
         "tiempo_viajes_min": tiempo_viajes_s / 60.0,
-        "uso_jornada_pct": 100.0 * float(c.get("tiempo_total_h", 0.0)) / 8.0,
+        "uso_jornada_pct": 100.0 * tiempo_h / 8.0,
+        "costo_diesel_usd": costo_diesel_camion_usd,
+        "costo_laboral_usd": costo_laboral_camion_usd,
+        "costo_operativo_usd": costo_diesel_camion_usd + costo_laboral_camion_usd,
     })
     for idx_v, v in enumerate(viajes, start=1):
         dist = v.get("distancias_m", {}) or {}
@@ -3058,6 +3088,8 @@ html = """<!DOCTYPE html>
     const distanciaTotalKm = Number(global.distancia_total_km || totalKm || 0);
     const eficienciaTonKm = Number(global.eficiencia_ton_km || (distanciaTotalKm > 0 ? cargaTotalTon / distanciaTotalKm : 0));
     const costoDiesel = Number(global.costo_diesel_usd || (distanciaTotalKm > 0 ? distanciaTotalKm / 4.5 * 2.99 : 0));
+    const costoLaboral = Number(global.costo_laboral_usd || 0);
+    const costoOperativo = Number(global.costo_operativo_usd || (costoDiesel + costoLaboral));
     const globalBox = document.getElementById("globalMetricsPremium");
     if (globalBox) {
       globalBox.innerHTML = [
@@ -3067,7 +3099,8 @@ html = """<!DOCTYPE html>
         metric("Distancia", `${fmt.format(distanciaTotalKm)} km`),
         metric("Eficiencia", `${eficienciaTonKm.toFixed(4)} ton/km`),
         metric("Jornada", formatHours(global.tiempo_total_h || 0)),
-        metric("Costo", `$${fmt.format(costoDiesel)}`)
+        metric("Diesel", `$${fmt.format(costoDiesel)}`),
+        metric("Costo op.", `$${fmt.format(costoOperativo)}`)
       ].join("");
     }
 
@@ -3487,6 +3520,12 @@ df_camiones["uso_jornada_pct"] = 100 * (df_camiones["tiempo_ruta_h"] / HORAS_TRA
 df_camiones["holgura_min"] = (HORAS_TRABAJO - df_camiones["tiempo_ruta_h"]) * 60
 df_camiones["galones_estimados"] = df_camiones["dist_total_km"] / RENDIMIENTO_KM_GAL
 df_camiones["costo_diesel_usd"] = df_camiones["galones_estimados"] * PRECIO_DIESEL_USD_GAL
+costo_laboral_hora_camion_usd = (
+    NUMERO_RECOLECTORES_CAMION * SUELDO_RECOLECTORES_USD
+    + NUMERO_CHOFER_CAMION * SUELDO_CHOFER_USD
+) / HORAS_NOMINA_MENSUAL
+df_camiones["costo_laboral_usd"] = df_camiones["tiempo_ruta_h"] * costo_laboral_hora_camion_usd
+df_camiones["costo_operativo_usd"] = df_camiones["costo_diesel_usd"] + df_camiones["costo_laboral_usd"]
 df_camiones["costo_nomina_mensual_usd"] = (
     NUMERO_RECOLECTORES_CAMION * SUELDO_RECOLECTORES_USD
     + NUMERO_CHOFER_CAMION * SUELDO_CHOFER_USD
@@ -3506,6 +3545,16 @@ dist_total_km = float(df_viajes["d_total_km"].sum()) if n_viajes > 0 else np.nan
 tiempo_total_h_rutas = float(df_camiones["tiempo_ruta_h"].sum()) if len(df_camiones) > 0 else np.nan
 galones_estimados = dist_total_km / RENDIMIENTO_KM_GAL if np.isfinite(dist_total_km) and RENDIMIENTO_KM_GAL > 0 else np.nan
 costo_diesel_usd = galones_estimados * PRECIO_DIESEL_USD_GAL if np.isfinite(galones_estimados) else np.nan
+costo_laboral_total_usd = (
+    tiempo_total_h_rutas * costo_laboral_hora_camion_usd
+    if np.isfinite(tiempo_total_h_rutas)
+    else np.nan
+)
+costo_operativo_total_usd = (
+    costo_diesel_usd + costo_laboral_total_usd
+    if np.isfinite(costo_diesel_usd) and np.isfinite(costo_laboral_total_usd)
+    else np.nan
+)
 costo_nomina_mensual_usd = n_camiones * (
     NUMERO_RECOLECTORES_CAMION * SUELDO_RECOLECTORES_USD
     + NUMERO_CHOFER_CAMION * SUELDO_CHOFER_USD
@@ -3535,7 +3584,9 @@ print(f"Carga total asignada (kg): {carga_total_asignada:,.2f}")
 print(f"Error carga vs demanda: {error_kg:,.2f} kg  ({error_rel_pct:.3f}%)")
 print(f"Distancia total (km): {dist_total_km:,.2f}" if np.isfinite(dist_total_km) else "Distancia total: N/A")
 print(f"Tiempo total sumado de rutas (h): {tiempo_total_h_rutas:,.2f}" if np.isfinite(tiempo_total_h_rutas) else "Tiempo total: N/A")
-print(f"Diesel estimado: {galones_estimados:,.2f} gal | Costo: ${costo_diesel_usd:,.2f}" if np.isfinite(costo_diesel_usd) else "Diesel estimado: N/A")
+print(f"Diesel estimado: {galones_estimados:,.2f} gal | Costo diesel: ${costo_diesel_usd:,.2f}" if np.isfinite(costo_diesel_usd) else "Diesel estimado: N/A")
+print(f"Costo laboral proporcional: ${costo_laboral_total_usd:,.2f}" if np.isfinite(costo_laboral_total_usd) else "Costo laboral proporcional: N/A")
+print(f"Costo operativo total: ${costo_operativo_total_usd:,.2f}" if np.isfinite(costo_operativo_total_usd) else "Costo operativo total: N/A")
 print(f"Costo nomina mensual flota: ${costo_nomina_mensual_usd:,.2f}")
 print(f"Gini de basura: {gini_demanda:.3f}")
 if hay_densidad:
