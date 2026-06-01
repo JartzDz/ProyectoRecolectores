@@ -11,7 +11,7 @@ from pathlib import Path
 
 CAPACIDAD_MAXIMA_CAMION_KG = 12000.0
 NUM_VEHICULOS_MAX = 10
-HORAS_TRABAJO_MIN_H = 6.0
+HORAS_TRABAJO_MIN_H = 6.5
 HORAS_TRABAJO_H = 8.0
 NUMERO_RECOLECTORES_CAMION = 3
 NUMERO_CHOFER_CAMION = 1
@@ -841,6 +841,13 @@ V_ULTIMO_A_DEPOSITO = PARAMETROS_OPERATIVOS["velocidad_transporte_kmh"]
 V_DEPOSITO_A_EST = PARAMETROS_OPERATIVOS["velocidad_retorno_kmh"]
 PESO_AHORRO_DIST = 0.60
 PESO_AHORRO_TIEMPO = 0.40
+NUM_ZONAS_CLUSTER = max(
+    1,
+    min(
+        NUM_VEHICULOS,
+        int(np.ceil(sum(float(v) for v in dict_demandas.values()) / CAPACIDAD_MAXIMA_KG)),
+    ),
+)
 
 def distancia_ruta_interna_m(camino, dist_matriz, idx):
     total = 0.0
@@ -997,29 +1004,34 @@ def aplicar_two_opt(rutas, dist_matriz, idx):
         rutas_opt.append(nueva)
     return rutas_opt, mejora_total
 
-def ejecutar_clarke_wright_optimizado(nodos_clientes, dict_demanda, dist_matriz, idx, estacion_id, deposito_id):
+def ejecutar_clarke_wright_optimizado(nodos_clientes, dict_demanda, dist_matriz, idx, estacion_id, deposito_id, num_zonas):
     """
     Flujo principal:
-      1) Clarke & Wright global crea las rutas por ahorro.
-      2) 2-opt mejora el orden interno de cada ruta sin mezclar sectores.
-      3) Cada ruta final se trata como una zona operativa para turnos.
+      1) Clustering espacial inicial crea zonas operativas.
+      2) Clarke & Wright optimiza solo dentro de cada zona.
+      3) 2-opt mejora el orden interno sin mezclar zonas.
     """
-    rutas = ejecutar_clarke_wright_hibrido(
-        nodos_clientes,
-        dict_demanda,
-        dist_matriz,
-        idx,
-        deposito_id,
-        CAPACIDAD_MAXIMA_KG,
-    )
-    rutas, mejora_2opt_m = aplicar_two_opt(rutas, dist_matriz, idx)
+    zonas = kmeans_zonas(nodos_clientes, num_zonas)
+    rutas_finales = []
+    mejora_total_2opt_m = 0.0
 
-    zonas = {}
-    for zona_id, ruta in enumerate(rutas, start=1):
-        ruta["zona"] = zona_id
-        zonas[zona_id] = list(ruta.get("camino", []))
+    for zona_id, nodos_zona in sorted(zonas.items()):
+        rutas_zona = ejecutar_clarke_wright_hibrido(
+            nodos_zona,
+            dict_demanda,
+            dist_matriz,
+            idx,
+            deposito_id,
+            CAPACIDAD_MAXIMA_KG,
+        )
+        rutas_zona, mejora_zona_m = aplicar_two_opt(rutas_zona, dist_matriz, idx)
+        mejora_total_2opt_m += float(mejora_zona_m)
 
-    return rutas, zonas, mejora_2opt_m
+        for ruta in rutas_zona:
+            ruta["zona"] = int(zona_id)
+            rutas_finales.append(ruta)
+
+    return rutas_finales, zonas, mejora_total_2opt_m
 
 rutas_base_bryan = ejecutar_clarke_wright_dist(
     nodos_clientes=nodos_clientes,
@@ -1037,13 +1049,14 @@ rutas_clarke_wright, zonas_hibridas, mejora_2opt_m = ejecutar_clarke_wright_opti
     idx=idx,
     estacion_id=estacion,
     deposito_id=deposito,
+    num_zonas=NUM_ZONAS_CLUSTER,
 )
 
 metricas_base = metricas_rutas(rutas_base_bryan, dist_m, idx, estacion, deposito)
 metricas_hibrido = metricas_rutas(rutas_clarke_wright, dist_m, idx, estacion, deposito)
 df_comparacion_algoritmos = pd.DataFrame([
     {"algoritmo": "Base Bryan - Clarke & Wright distancia", **metricas_base},
-    {"algoritmo": "Clarke & Wright global + ahorro distancia-tiempo + 2-opt", **metricas_hibrido},
+    {"algoritmo": "Clustering inicial + Clarke & Wright por zona + 2-opt", **metricas_hibrido},
 ])
 df_comparacion_algoritmos["mejora_distancia_pct_vs_base"] = np.nan
 df_comparacion_algoritmos["mejora_tiempo_pct_vs_base"] = np.nan
@@ -1060,7 +1073,8 @@ df_comparacion_algoritmos.to_csv("comparacion_algoritmos.csv", index=False, enco
 print("\n======================")
 print("COMPARACION CLARKE & WRIGHT")
 print("======================")
-print(f"Rutas/Zonas generadas por Clarke & Wright: {len(zonas_hibridas)}")
+print(f"Zonas iniciales por clustering: {len(zonas_hibridas)}")
+print(f"Rutas generadas por Clarke & Wright zonal: {len(rutas_clarke_wright)}")
 print(f"Mejora interna por 2-opt: {mejora_2opt_m/1000:.2f} km")
 display(df_comparacion_algoritmos.round(2))
 
@@ -1246,6 +1260,91 @@ for viaje in lista_viajes:
     lista_viajes_tiempo.extend(dividir_viaje_por_tiempo(viaje, MAX_TIEMPO_SERVICIO_S))
 lista_viajes = lista_viajes_tiempo
 
+MIN_CARGA_VIAJE_KG = 0.60 * CAPACIDAD_MAXIMA_KG
+
+def fusionar_viajes_livianos(viajes, min_carga_kg, max_capacidad_kg, max_tiempo_s):
+    """Une viajes livianos cuando la fusion respeta capacidad y tiempo maximo."""
+    viajes = [dict(v) for v in viajes]
+    activo = [True] * len(viajes)
+    cambio = True
+
+    while cambio:
+        cambio = False
+        livianos = sorted(
+            (
+                i for i, v in enumerate(viajes)
+                if activo[i]
+                and v.get("valido", True)
+                and float(v.get("carga", 0.0)) < min_carga_kg
+            ),
+            key=lambda i: float(viajes[i].get("carga", 0.0)),
+        )
+
+        for i in livianos:
+            if not activo[i]:
+                continue
+
+            mejor = None
+            for j, candidato_base in enumerate(viajes):
+                if i == j or not activo[j] or not candidato_base.get("valido", True):
+                    continue
+                if viajes[i].get("zona", None) != candidato_base.get("zona", None):
+                    continue
+
+                carga_total = float(viajes[i].get("carga", 0.0)) + float(candidato_base.get("carga", 0.0))
+                if carga_total > max_capacidad_kg + 0.01:
+                    continue
+
+                opciones = [
+                    list(candidato_base.get("camino", [])) + list(viajes[i].get("camino", [])),
+                    list(viajes[i].get("camino", [])) + list(candidato_base.get("camino", [])),
+                ]
+                for camino_candidato in opciones:
+                    combinado = construir_viaje_operativo(
+                        camino=camino_candidato,
+                        carga=round(carga_total, 2),
+                        zona=candidato_base.get("zona", viajes[i].get("zona", None)),
+                        subzona=candidato_base.get("subzona", None),
+                        motivo="Viajes fusionados para balancear carga",
+                    )
+                    tiempo_est = float(combinado.get("tiempo_s", {}).get("si_sale_estacion", np.inf))
+                    if not combinado.get("valido", True) or tiempo_est > max_tiempo_s:
+                        continue
+                    score = (
+                        min(carga_total, max_capacidad_kg) / max_capacidad_kg,
+                        -abs(max_capacidad_kg - carga_total),
+                        -tiempo_est,
+                    )
+                    if mejor is None or score > mejor[0]:
+                        mejor = (score, j, combinado)
+
+            if mejor is not None:
+                _, j, combinado = mejor
+                viajes[j] = combinado
+                activo[i] = False
+                cambio = True
+                break
+
+    fusionados = [v for v, ok in zip(viajes, activo) if ok]
+    livianos_finales = [
+        v for v in fusionados
+        if v.get("valido", True) and float(v.get("carga", 0.0)) < min_carga_kg
+    ]
+    if livianos_finales:
+        print(
+            "Advertencia: "
+            f"{len(livianos_finales)} viajes quedan bajo {min_carga_kg/1000:.1f} t "
+            "porque no se pudieron fusionar sin exceder capacidad o 8h."
+        )
+    return fusionados
+
+lista_viajes = fusionar_viajes_livianos(
+    lista_viajes,
+    MIN_CARGA_VIAJE_KG,
+    CAPACIDAD_MAXIMA_KG,
+    MAX_TIEMPO_SERVICIO_S,
+)
+
 sobrecargados = [v for v in lista_viajes if float(v.get("carga", 0.0)) > CAPACIDAD_MAXIMA_KG + 0.01]
 if sobrecargados:
     raise ValueError(f"Hay {len(sobrecargados)} viajes sobre la capacidad maxima de {CAPACIDAD_MAXIMA_KG:.0f} kg.")
@@ -1366,11 +1465,25 @@ def construir_viaje_asignado(fuente, origen_nodo):
 def origen_para_siguiente_viaje(camion):
     return id_estacion if len(camion.get("viajes", [])) == 0 else id_relleno
 
+def zonas_de_camion(camion):
+    zonas = set()
+    for viaje in camion.get("viajes", []):
+        for z in viaje.get("zonas", []) or []:
+            zonas.add(int(z))
+    return zonas
+
 def construir_camion_desde_viajes(camion_id, viajes):
-    tiempo_total_s = float(sum(v.get("tiempo_productivo_s", 0.0) for v in viajes))
+    for viaje in viajes:
+        (viaje.get("costos", {}) or {})["balance_turno_s"] = 0.0
+
+    tiempo_productivo_s = float(sum(v.get("tiempo_productivo_s", 0.0) for v in viajes))
+    tiempo_total_s = max(tiempo_productivo_s, HORAS_TRABAJO_MIN)
     distancia_total_m = float(sum(v.get("distancia_m", 0.0) for v in viajes))
     if not viajes:
         return None
+    holgura_s = max(0.0, tiempo_total_s - tiempo_productivo_s)
+    if holgura_s > 0:
+        (viajes[-1].get("costos", {}) or {})["balance_turno_s"] = holgura_s
     return {
         "id": int(camion_id),
         "vehiculo_id": int(camion_id),
@@ -1381,8 +1494,8 @@ def construir_camion_desde_viajes(camion_id, viajes):
         "viajes": viajes,
         "tiempo_total_s": tiempo_total_s,
         "tiempo_total_h": tiempo_total_s / 3600.0,
-        "tiempo_productivo_s": tiempo_total_s,
-        "tiempo_productivo_h": tiempo_total_s / 3600.0,
+        "tiempo_productivo_s": tiempo_productivo_s,
+        "tiempo_productivo_h": tiempo_productivo_s / 3600.0,
         "distancia_total_m": distancia_total_m,
         "retorno_final": False,
     }
@@ -1393,10 +1506,14 @@ for fuente in viajes_pendientes:
     mejor_idx = None
     mejor_score = -np.inf
     for idx_camion, camion in enumerate(camiones_tmp):
+        zonas_actuales = zonas_de_camion(camion)
+        zona_fuente = fuente.get("zona", None)
+        if zonas_actuales and zona_fuente is not None and int(zona_fuente) not in zonas_actuales:
+            continue
         viaje_candidato = construir_viaje_asignado(fuente, origen_para_siguiente_viaje(camion))
         if viaje_candidato is None:
             continue
-        tiempo_candidato = float(camion["tiempo_total_s"]) + float(viaje_candidato["tiempo_productivo_s"])
+        tiempo_candidato = float(camion["tiempo_productivo_s"]) + float(viaje_candidato["tiempo_productivo_s"])
         if tiempo_candidato > HORAS_TRABAJO + 1.0:
             continue
         score = tiempo_candidato
@@ -2378,21 +2495,60 @@ clientes_geojson = gdf_to_geojson_dict(gdf_clientes)
 clave_geojson    = gdf_to_geojson_dict(gdf_clave)
 calles_geojson   = gdf_to_geojson_dict(gdf_calles) if INCLUIR_CALLES else {"type":"FeatureCollection","features":[]}
 
+def construir_poligonos_zonas_no_superpuestos(zonas, grafo):
+    if not zonas:
+        return {}
+
+    puntos_por_zona = {}
+    centroides = []
+    zona_ids = []
+    todos = []
+    for zona_id, nodos_zona in sorted(zonas.items()):
+        pts = [
+            geom.Point(float(grafo.nodes[n]["x"]), float(grafo.nodes[n]["y"]))
+            for n in nodos_zona
+            if n in grafo.nodes and "x" in grafo.nodes[n] and "y" in grafo.nodes[n]
+        ]
+        if not pts:
+            continue
+        puntos_por_zona[int(zona_id)] = pts
+        todos.extend(pts)
+        centroides.append(geom.MultiPoint(pts).centroid)
+        zona_ids.append(int(zona_id))
+
+    if not centroides:
+        return {}
+    if len(centroides) == 1:
+        return {zona_ids[0]: geom.MultiPoint(todos).convex_hull.buffer(0.001)}
+
+    limite = geom.MultiPoint(todos).convex_hull.buffer(0.003)
+    geoms = {}
+    try:
+        from shapely.ops import voronoi_diagram
+        celdas = voronoi_diagram(geom.MultiPoint(centroides), envelope=limite, edges=False)
+        for celda in celdas.geoms:
+            punto_ref = celda.representative_point()
+            idx_centro = int(np.argmin([punto_ref.distance(c) for c in centroides]))
+            zona_id = zona_ids[idx_centro]
+            recortada = celda.intersection(limite)
+            geoms[zona_id] = recortada if zona_id not in geoms else geoms[zona_id].union(recortada)
+    except Exception:
+        geoms = {}
+
+    for zona_id, pts in puntos_por_zona.items():
+        if zona_id not in geoms or geoms[zona_id].is_empty:
+            base = geom.MultiPoint(pts).convex_hull
+            geoms[zona_id] = base.buffer(0.00025 if base.geom_type in ("Point", "LineString") else 0.00008)
+
+    return geoms
+
 sectores_features = []
 if "zonas_hibridas" in globals() and zonas_hibridas:
+    geometrias_zonas = construir_poligonos_zonas_no_superpuestos(zonas_hibridas, G)
     for zona_id, nodos_zona in sorted(zonas_hibridas.items()):
-        puntos = [
-            geom.Point(float(G.nodes[n]["x"]), float(G.nodes[n]["y"]))
-            for n in nodos_zona
-            if n in G.nodes and "x" in G.nodes[n] and "y" in G.nodes[n]
-        ]
-        if not puntos:
+        geom_zona = geometrias_zonas.get(int(zona_id))
+        if geom_zona is None or geom_zona.is_empty:
             continue
-        geom_zona = geom.MultiPoint(puntos).convex_hull
-        if geom_zona.geom_type in ("Point", "LineString"):
-            geom_zona = geom_zona.buffer(0.00025)
-        else:
-            geom_zona = geom_zona.buffer(0.00008)
         sectores_features.append({
             "type": "Feature",
             "properties": {
@@ -2715,7 +2871,7 @@ html = """<!DOCTYPE html>
           <div class="route-table-wrap">
             <table class="route-table">
               <thead>
-                <tr><th>Ruta</th><th>Camion</th><th>Operacion</th><th>Km</th><th>Min</th></tr>
+                <tr><th>Ruta</th><th>Camion</th><th>Operacion</th><th>Km</th><th>Tiempo</th></tr>
               </thead>
               <tbody id="routeRowsPremium"></tbody>
             </table>
@@ -2758,7 +2914,7 @@ html = """<!DOCTYPE html>
     <div class="routes-title">Detalle de rutas</div>
     <table class="route-table">
       <thead>
-        <tr><th>Ruta</th><th>Camion</th><th>Operacion</th><th>Km</th><th>Min</th></tr>
+        <tr><th>Ruta</th><th>Camion</th><th>Operacion</th><th>Km</th><th>Tiempo</th></tr>
       </thead>
       <tbody id="routeRows"></tbody>
     </table>
@@ -2879,6 +3035,13 @@ html = """<!DOCTYPE html>
     return `${h}h ${String(m).padStart(2, "0")}m`;
   }
 
+  function formatMinutes(totalMinutes) {
+    const totalMin = Math.round(Number(totalMinutes || 0));
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    return `${h}h ${String(m).padStart(2, "0")}m`;
+  }
+
   function capacidadTon(item) {
     return Number((item && item.capacidad_kg) || (METRICAS.global && METRICAS.global.capacidad_camion_kg) || 12000) / 1000;
   }
@@ -2924,7 +3087,7 @@ html = """<!DOCTYPE html>
             </div>
             <div class="small" style="margin:-4px 0 8px;">${c.operacion || "Estacion -> Recoleccion -> Relleno"}</div>
             <div class="stat-line">
-              <div><b>${fmt.format(c.tiempo_h || 0)}</b><span>h jornada</span></div>
+              <div><b>${formatHours(c.tiempo_h || 0)}</b><span>jornada</span></div>
               <div><b>${fmt0.format(c.viajes || 0)}</b><span>viajes</span></div>
               <div><b>${fmt.format(c.distancia_km || 0)}</b><span>km</span></div>
             </div>
@@ -2942,17 +3105,17 @@ html = """<!DOCTYPE html>
         const color = colores[c] || "#111827";
         const base = `<td><span class="swatch" style="background:${color}"></span>${v.camion}</td><td>${v.vehiculo || "-"}</td>`;
         const out = [];
-        out.push(`<tr data-camion="${c}">${base}<td>Aproximacion desde ${v.origen}</td><td>${fmt.format(v.aprox_km || 0)}</td><td>${fmt.format(v.aprox_min || 0)}</td></tr>`);
+        out.push(`<tr data-camion="${c}">${base}<td>Aproximacion desde ${v.origen}</td><td>${fmt.format(v.aprox_km || 0)}</td><td>${formatMinutes(v.aprox_min || 0)}</td></tr>`);
         const cargaTxt = `${fmt.format(cargaTon(v))} / ${fmt.format(capacidadTon(v))} t`;
-        out.push(`<tr data-camion="${c}">${base}<td>Recoleccion (${cargaTxt})</td><td>${fmt.format(v.recoleccion_km || 0)}</td><td>${fmt.format(v.recoleccion_min || 0)}</td></tr>`);
+        out.push(`<tr data-camion="${c}">${base}<td>Recoleccion (${cargaTxt})</td><td>${fmt.format(v.recoleccion_km || 0)}</td><td>${formatMinutes(v.recoleccion_min || 0)}</td></tr>`);
         if ((v.descarga_km || 0) > 0 || (v.descarga_min || 0) > 0) {
-          out.push(`<tr data-camion="${c}">${base}<td>Descarga final en relleno</td><td>${fmt.format(v.descarga_km || 0)}</td><td>${fmt.format(v.descarga_min || 0)}</td></tr>`);
+          out.push(`<tr data-camion="${c}">${base}<td>Descarga final en relleno</td><td>${fmt.format(v.descarga_km || 0)}</td><td>${formatMinutes(v.descarga_min || 0)}</td></tr>`);
         }
         if ((v.cierre_km || 0) > 0 || (v.cierre_min || 0) > 0) {
-          out.push(`<tr data-camion="${c}">${base}<td>Cierre: regreso al punto de inicio</td><td>${fmt.format(v.cierre_km || 0)}</td><td>${fmt.format(v.cierre_min || 0)}</td></tr>`);
+          out.push(`<tr data-camion="${c}">${base}<td>Cierre: regreso al punto de inicio</td><td>${fmt.format(v.cierre_km || 0)}</td><td>${formatMinutes(v.cierre_min || 0)}</td></tr>`);
         }
         if ((v.balance_turno_min || 0) > 0) {
-          out.push(`<tr data-camion="${c}">${base}<td>Holgura operativa</td><td>0</td><td>${fmt.format(v.balance_turno_min || 0)}</td></tr>`);
+          out.push(`<tr data-camion="${c}">${base}<td>Holgura operativa</td><td>0</td><td>${formatMinutes(v.balance_turno_min || 0)}</td></tr>`);
         }
         return out;
       }).join("");

@@ -2,24 +2,29 @@ CamiÃ³n,Paso,Tramo,De,A,Nodo_De,Nodo_A,Paradas_en_recolecciÃ³n,Carga_kg,Dist
 1,V1-1,Aprox,Estacion,Recoleccion,639837109,601481869,0,0.0,7.501572640862311,9.001887169034774,1,Estacion -> Recoleccion -> Relleno
 1,V1-2,Recol,Recoleccion,Recoleccion,601481869,601481869,1,12000.0,0.0,0.5,1,Estacion -> Recoleccion -> Relleno
 1,V1-3,Desc,Recoleccion,Relleno,601481869,6433377455,0,0.0,18.4185651119752,27.6278476679628,1,Estacion -> Recoleccion -> Relleno
-1,V2-1,Aprox,Relleno,Recoleccion,6433377455,419724295,0,0.0,16.64873618694331,19.978483424331973,1,Estacion -> Recoleccion -> Relleno
-1,V2-2,Recol,Recoleccion,Recoleccion,419724295,524356232,9,11930.19,0.8673515579102057,9.704109347461236,1,Estacion -> Recoleccion -> Relleno
-1,V2-3,Desc,Recoleccion,Relleno,524356232,6433377455,0,0.0,16.306537023672494,24.45980553550874,1,Estacion -> Recoleccion -> Relleno
-1,V3-1,Aprox,Relleno,Recoleccion,6433377455,525278474,0,0.0,17.548619843930958,21.05834381271715,1,Estacion -> Recoleccion -> Relleno
-1,V3-2,Recol,Recoleccion,Recoleccion,525278474,4173827179,213,9962.19,27.459802461827802,271.2588147709668,1,Estacion -> Recoleccion -> Relleno
-1,V3-3,Desc,Recoleccion,Relleno,4173827179,6433377455,0,0.0,13.992353730515147,20.98853059577272,1,Estacion -> Recoleccion -> Relleno
-1,V4-1,Aprox,Relleno,Recoleccion,6433377455,601481869,0,0.0,18.923991932515296,22.708790319018355,1,Estacion -> Recoleccion -> Relleno
-1,V4-2,Recol,Recoleccion,Recoleccion,601481869,601481869,1,127.13,0.0,0.5,1,Estacion -> Recoleccion -> Relleno
-1,V4-3,Desc,Recoleccion,Relleno,601481869,6433377455,0,0.0,18.4185651119752,27.6278476679628,1,Estacion -> Recoleccion -> Relleno
-2,V1-1,Aprox,Estacion,Recoleccion,639837109,525512788,0,0.0,5.073146762493066,6.08777611499168,2,Estacion -> Recoleccion -> Relleno
-2,V1-2,Recol,Recoleccion,Recoleccion,525512788,525411506,64,8355.95,7.097088179646295,74.58252907787777,2,Estacion -> Recoleccion -> Relleno
-2,V1-3,Desc,Recoleccion,Relleno,525411506,6433377455,0,0.0,15.695652733514365,23.54347910027155,2,Estacion -> Recoleccion -> Relleno
-2,V2-1,Aprox,Relleno,Recoleccion,6433377455,577717166,0,0.0,18.353377231016704,22.024052677220045,2,Estacion -> Recoleccion -> Relleno
-2,V2-2,Recol,Recoleccion,Recoleccion,577717166,616637704,180,7086.73,23.690602338411804,232.14361403047084,2,Estacion -> Recoleccion -> Relleno
-2,V2-3,Desc,Recoleccion,Relleno,616637704,6433377455,0,0.0,16.97238974606153,25.458584619092296,2,Estacion -> Recoleccion -> Relleno
+1,V2-1,Aprox,Relleno,Recoleccion,6433377455,601481869,0,0.0,18.923991932515296,22.708790319018355,1,Estacion -> Recoleccion -> Relleno
+1,V2-2,Recol,Recoleccion,Recoleccion,601481869,577205980,167,6788.9,24.142694361142265,228.3561661668536,1,Estacion -> Recoleccion -> Relleno
+1,V2-3,Desc,Recoleccion,Relleno,577205980,6433377455,0,0.0,17.31155194097125,25.967327911456877,1,Estacion -> Recoleccion -> Relleno
+1,V2-B,Holgura operativa,Operacion,Operacion,0,0,0,0.0,0.0,75.83798076567358,1,Estacion -> Recoleccion -> Relleno
+2,V1-1,Aprox,Estacion,Recoleccion,639837109,419724295,0,0.0,4.19057828958463,5.028693947501556,2,Estacion -> Recoleccion -> Relleno
+2,V1-2,Recol,Recoleccion,Recoleccion,419724295,524356232,9,11930.19,0.8673515579102057,9.704109347461236,2,Estacion -> Recoleccion -> Relleno
+2,V1-3,Desc,Recoleccion,Relleno,524356232,6433377455,0,0.0,16.306537023672494,24.45980553550874,2,Estacion -> Recoleccion -> Relleno
+2,V2-1,Aprox,Relleno,Recoleccion,6433377455,524356314,0,0.0,16.32353006941912,19.588236083302945,2,Estacion -> Recoleccion -> Relleno
+2,V2-2,Recol,Recoleccion,Recoleccion,524356314,524356273,65,8174.77,9.1030167352936,87.1181004117616,2,Estacion -> Recoleccion -> Relleno
+2,V2-3,Desc,Recoleccion,Relleno,524356273,6433377455,0,0.0,17.214455101430406,25.82168265214561,2,Estacion -> Recoleccion -> Relleno
+2,V3-1,Aprox,Relleno,Recoleccion,6433377455,525697090,0,0.0,16.882352108354336,20.258822530025203,2,Estacion -> Recoleccion -> Relleno
+2,V3-2,Recol,Recoleccion,Recoleccion,525697090,525278458,117,8078.15,13.41981195100824,139.01887170604945,2,Estacion -> Recoleccion -> Relleno
+2,V3-3,Desc,Recoleccion,Relleno,525278458,6433377455,0,0.0,16.076063696703805,24.114095545055708,2,Estacion -> Recoleccion -> Relleno
+2,V3-B,Holgura operativa,Operacion,Operacion,0,0,0,0.0,0.0,34.88758224118798,2,Estacion -> Recoleccion -> Relleno
 3,V1-1,Aprox,Estacion,Recoleccion,639837109,616637724,0,0.0,5.176835038056106,6.212202045667327,3,Estacion -> Recoleccion -> Relleno
-3,V1-2,Recol,Recoleccion,Recoleccion,616637724,616633649,123,6961.03,15.067350774649398,151.9041046478964,3,Estacion -> Recoleccion -> Relleno
-3,V1-3,Desc,Recoleccion,Relleno,616633649,6433377455,0,0.0,17.164209462976398,25.746314194464603,3,Estacion -> Recoleccion -> Relleno
+3,V1-2,Recol,Recoleccion,Recoleccion,616637724,616637704,181,7312.23,25.751008471780217,245.00605083068132,3,Estacion -> Recoleccion -> Relleno
+3,V1-3,Desc,Recoleccion,Relleno,616637704,6433377455,0,0.0,16.97238974606153,25.458584619092296,3,Estacion -> Recoleccion -> Relleno
+3,V1-B,Holgura operativa,Operacion,Operacion,0,0,0,0.0,0.0,113.3231625045591,3,Estacion -> Recoleccion -> Relleno
 4,V1-1,Aprox,Estacion,Recoleccion,639837109,524110403,0,0.0,5.774114890667962,6.928937868801554,4,Estacion -> Recoleccion -> Relleno
-4,V1-2,Recol,Recoleccion,Recoleccion,524110403,11520859500,361,3576.78,43.92790625665547,444.0674375399329,4,Estacion -> Recoleccion -> Relleno
-4,V1-3,Desc,Recoleccion,Relleno,11520859500,6433377455,0,0.0,18.334058638969594,27.501087958454388,4,Estacion -> Recoleccion -> Relleno
+4,V1-2,Recol,Recoleccion,Recoleccion,524110403,4173827179,213,3228.44,27.480046286515208,271.3802777190912,4,Estacion -> Recoleccion -> Relleno
+4,V1-3,Desc,Recoleccion,Relleno,4173827179,6433377455,0,0.0,13.992353730515147,20.98853059577272,4,Estacion -> Recoleccion -> Relleno
+4,V1-B,Holgura operativa,Operacion,Operacion,0,0,0,0.0,0.0,90.70225381633445,4,Estacion -> Recoleccion -> Relleno
+5,V1-1,Aprox,Estacion,Recoleccion,639837109,3748284430,0,0.0,5.695966879416867,6.83516025530024,5,Estacion -> Recoleccion -> Relleno
+5,V1-2,Recol,Recoleccion,Recoleccion,3748284430,347404204,199,2487.32,24.277545470806476,245.16527282483884,5,Estacion -> Recoleccion -> Relleno
+5,V1-3,Desc,Recoleccion,Relleno,347404204,6433377455,0,0.0,16.1065105704846,24.1597658557269,5,Estacion -> Recoleccion -> Relleno
+5,V1-B,Holgura operativa,Operacion,Operacion,0,0,0,0.0,0.0,113.83980106413401,5,Estacion -> Recoleccion -> Relleno

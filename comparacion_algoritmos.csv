@@ -1,3 +1,3 @@
 ﻿algoritmo,rutas,rutas_validas,paradas,carga_kg,distancia_km,tiempo_h,kg_por_km,mejora_distancia_pct_vs_base,mejora_tiempo_pct_vs_base
 Base Bryan - Clarke & Wright distancia,6,6,951,60000.0,272.6232906391019,26.02590771126089,220.0839108769612,,
-Clarke & Wright global + ahorro distancia-tiempo + 2-opt,6,6,951,59999.99999999999,249.45262246962562,22.89567052175136,240.52663550292337,8.499152113951107,12.027389108719301
+Clustering inicial + Clarke & Wright por zona + 2-opt,8,8,951,60000.00000000001,298.0187186949389,24.48063940120366,201.32963547641396,-9.315208541538512,5.937423306041392
