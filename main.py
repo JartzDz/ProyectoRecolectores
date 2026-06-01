@@ -60,7 +60,7 @@ except Exception:
 
 print("1) Cargando grafo...")
 G = ox.load_graphml("grafo_actualizado.graphml")
-G_RUTEO = nx.Graph(G)
+G_RUTEO = G
 print("   -> OK grafo cargado.")
 
 # 0) Validar que exista 'length' (distancia en metros)
@@ -347,6 +347,51 @@ print("Tipos de nodo:", pd.Series(list(tipos_basura_nodos.values())).value_count
 
 top_3 = sorted(dict_demandas.items(), key=lambda x: x[1], reverse=True)[:3]
 print(f"\nTop 3 Hotspots: {top_3}")
+
+# ---------------------------------------------------------
+# H) Usar salida oficial del pipeline de compactacion
+# ---------------------------------------------------------
+PIPELINE_COMPACTADOS_PATH = "clientes_compactados.gpkg"
+PIPELINE_COMPACTADOS_LAYER = "clientes"
+
+if not Path(PIPELINE_COMPACTADOS_PATH).exists():
+    raise FileNotFoundError(
+        "No existe clientes_compactados.gpkg. Ejecuta primero pipeline_compactación.py "
+        "sin modificarlo para generar la capa oficial de clientes compactados."
+    )
+
+gdf_compactados = gpd.read_file(PIPELINE_COMPACTADOS_PATH, layer=PIPELINE_COMPACTADOS_LAYER)
+if "id_nodo" not in gdf_compactados.columns or "demanda_kg" not in gdf_compactados.columns:
+    raise ValueError("clientes_compactados.gpkg debe tener columnas id_nodo y demanda_kg en layer='clientes'.")
+
+nodos_compactados = []
+dict_demandas_compactadas = {}
+for _, row in gdf_compactados.iterrows():
+    try:
+        nodo = int(row["id_nodo"])
+        demanda = float(row["demanda_kg"])
+    except Exception:
+        continue
+    if nodo in G.nodes and demanda > 0:
+        nodos_compactados.append(nodo)
+        dict_demandas_compactadas[nodo] = round(demanda, 2)
+        G.nodes[nodo]["demanda_kg"] = round(demanda, 2)
+        if "clientes_agrupados" in row:
+            try:
+                G.nodes[nodo]["clientes_agrupados"] = int(row["clientes_agrupados"])
+            except Exception:
+                pass
+
+if not nodos_compactados:
+    raise ValueError("La capa clientes del pipeline no contiene clientes compactados utilizables.")
+
+nodos_clientes = nodos_compactados
+dict_demandas = dict_demandas_compactadas
+
+print("\n--- CLIENTES COMPACTADOS DEL PIPELINE ---")
+print(f"Clientes compactados usados: {len(nodos_clientes)}")
+print(f"Demanda compactada total: {sum(dict_demandas.values()):.2f} kg")
+
 # CELDA 3 (COINCIDE CON CELDA 6): Matriz OD DISTANCIAS (m) + helpers de TIEMPO por tramo
 import numpy as np
 import networkx as nx
@@ -383,7 +428,7 @@ lista_lugares = [estacion, deposito] + clientes
 n = len(lista_lugares)
 idx = {node: i for i, node in enumerate(lista_lugares)}
 
-print(f"Calculando matriz de DISTANCIAS por calles entre {n} puntos (weight='length', grafo no dirigido)...")
+print(f"Calculando matriz de DISTANCIAS por calles entre {n} puntos (weight='length', grafo dirigido)...")
 
 # -----------------------------
 # 2) Matriz de distancias mÃ­nimas (m) por OSM
@@ -1150,45 +1195,83 @@ for ruta_info in rutas_clarke_wright:
             motivo=parte.get("motivo", None),
         ))
 
+def dividir_viaje_por_tiempo(viaje, max_tiempo_s):
+    if not viaje.get("valido", True) or not viaje.get("camino"):
+        return [viaje]
+    if float(viaje.get("tiempo_s", {}).get("si_sale_estacion", np.inf)) <= max_tiempo_s:
+        return [viaje]
+
+    partes = []
+    camino_actual = []
+    carga_actual = 0.0
+    subzona_base = viaje.get("subzona", 1)
+    subzona = int(subzona_base) if isinstance(subzona_base, int) else 1
+
+    def carga_nodo(nodo):
+        return float(dict_demandas.get(nodo, 0.0))
+
+    def construir_parte(camino, carga, subzona_id):
+        return construir_viaje_operativo(
+            camino=list(camino),
+            carga=round(float(carga), 2),
+            zona=viaje.get("zona", None),
+            subzona=subzona_id,
+            motivo="Ruta dividida por tiempo maximo",
+        )
+
+    for nodo in viaje["camino"]:
+        demanda = carga_nodo(nodo)
+        candidato_camino = camino_actual + [nodo]
+        candidato_carga = carga_actual + demanda
+        candidato = construir_parte(candidato_camino, candidato_carga, subzona)
+        candidato_t = float(candidato.get("tiempo_s", {}).get("si_sale_estacion", np.inf))
+
+        if camino_actual and (candidato_t > max_tiempo_s or candidato_carga > CAPACIDAD_MAXIMA_KG):
+            partes.append(construir_parte(camino_actual, carga_actual, subzona))
+            subzona += 1
+            camino_actual = [nodo]
+            carga_actual = demanda
+        else:
+            camino_actual = candidato_camino
+            carga_actual = candidato_carga
+
+    if camino_actual:
+        partes.append(construir_parte(camino_actual, carga_actual, subzona))
+
+    return partes
+
+MAX_TIEMPO_SERVICIO_S = HORAS_TRABAJO_H * 3600.0
+lista_viajes_tiempo = []
+for viaje in lista_viajes:
+    lista_viajes_tiempo.extend(dividir_viaje_por_tiempo(viaje, MAX_TIEMPO_SERVICIO_S))
+lista_viajes = lista_viajes_tiempo
+
 sobrecargados = [v for v in lista_viajes if float(v.get("carga", 0.0)) > CAPACIDAD_MAXIMA_KG + 0.01]
 if sobrecargados:
     raise ValueError(f"Hay {len(sobrecargados)} viajes sobre la capacidad maxima de {CAPACIDAD_MAXIMA_KG:.0f} kg.")
+
+excedidos_tiempo = [
+    v for v in lista_viajes
+    if float(v.get("tiempo_s", {}).get("si_sale_estacion", 0.0)) > MAX_TIEMPO_SERVICIO_S + 1.0
+]
+if excedidos_tiempo:
+    print(f"Advertencia: {len(excedidos_tiempo)} viajes individuales exceden 8h aun tras dividir; revisar conectividad/zona.")
 
 print(f"Viajes Clarke & Wright generados: {len(lista_viajes)}")
 print(f"Viajes vÃ¡lidos para asignaciÃ³n: {sum(1 for v in lista_viajes if v.get('valido'))}")
 
 
-# CELDA 6 (V3): Asignacion por turnos reales, sin descarga intermedia por llenado
+# CELDA 6: Asignacion generica de rutas/camiones, sin horarios por turno
 import numpy as np
 
 HORAS_TRABAJO = HORAS_TRABAJO_H * 3600  # segundos
 HORAS_TRABAJO_MIN = HORAS_TRABAJO_MIN_H * 3600  # segundos
-TURNOS_OPERATIVOS = [
-    {
-        "turno": 1,
-        "horario": "06:00-14:30",
-        "descarga": "inicio",
-        "estado_inicial_camion": "lleno_turno_anterior",
-        "estado_final_camion": "lleno_turno_actual",
-        "descripcion": "Recibe camion lleno, descarga al iniciar, recolecta y lo deja lleno en estacion",
-    },
-    {
-        "turno": 2,
-        "horario": "13:00-21:30",
-        "descarga": "inicio",
-        "estado_inicial_camion": "lleno_turno_anterior",
-        "estado_final_camion": "lleno_turno_actual",
-        "descripcion": "Recibe camion lleno, descarga al iniciar, recolecta y lo deja lleno en estacion",
-    },
-    {
-        "turno": 3,
-        "horario": "15:00-24:00",
-        "descarga": "inicio",
-        "estado_inicial_camion": "lleno_turno_anterior",
-        "estado_final_camion": "lleno_turno_actual",
-        "descripcion": "Recibe camion lleno, descarga al iniciar, recolecta y lo deja lleno en estacion",
-    },
-]
+OPERACION_GENERICA = {
+    "descarga": "fin",
+    "estado_inicial_camion": "vacio",
+    "estado_final_camion": "vacio_en_relleno",
+    "descripcion": "Estacion -> Recoleccion -> Relleno",
+}
 
 # --------------------------
 # Helpers de tiempo (igual)
@@ -1228,339 +1311,145 @@ def distancia_interna_camino_m(camino):
         total += float(d)
     return total
 
-def evaluar_servicio(camino, turno_info):
+def construir_viaje_asignado(fuente, origen_nodo):
+    camino = list(fuente.get("camino", []))
     if not camino:
         return None
     primer = camino[0]
     ultimo = camino[-1]
+    carga = float(fuente.get("carga", 0.0))
+    if carga > CAPACIDAD_MAXIMA_KG + 0.01:
+        return None
+
     d_recol_m = distancia_interna_camino_m(camino)
     t_recol_s = tiempo_segundos(d_recol_m, V_RECOLECCION) + len(camino) * TIEMPO_RECOLECCION_POR_NODO
 
-    distancias = {"descarga_previa_m": 0.0, "aprox_m": 0.0, "recoleccion_m": d_recol_m, "descarga_m": 0.0, "cierre_m": 0.0}
-    costos = {"descarga_previa_s": 0.0, "aprox_s": 0.0, "interno_s": t_recol_s, "descarga_s": 0.0, "cierre_s": 0.0}
-
-    if turno_info["descarga"] == "fin":
-        d_aprox = D(id_estacion, primer)
-        d_desc = D(ultimo, id_relleno)
-        t_aprox = tiempo_segundos(d_aprox, V_ESTACION_A_PRIMERO)
-        t_desc = tiempo_segundos(d_desc, V_ULTIMO_A_DEPOSITO)
-        tramos = [
-            {"tipo": "Aprox", "de": "Estacion", "a": "Recoleccion", "nodo_de": int(id_estacion), "nodo_a": int(primer), "dur_s": t_aprox, "dist_m": d_aprox},
-            {"tipo": "Recol", "de": "Recoleccion", "a": "Recoleccion", "nodo_de": int(primer), "nodo_a": int(ultimo), "dur_s": t_recol_s, "dist_m": d_recol_m},
-            {"tipo": "Desc", "de": "Recoleccion", "a": "Relleno", "nodo_de": int(ultimo), "nodo_a": int(id_relleno), "dur_s": t_desc, "dist_m": d_desc},
-        ]
-        distancias.update({"aprox_m": d_aprox, "descarga_m": d_desc})
-        costos.update({"aprox_s": t_aprox, "descarga_s": t_desc})
-        origen = "Estacion"
-        origen_nodo = id_estacion
-        fin_nodo = id_relleno
-    else:
-        d_descarga_previa = D(id_estacion, id_relleno)
-        d_aprox = D(id_relleno, primer)
-        d_cierre = D(ultimo, id_estacion)
-        t_descarga_previa = tiempo_segundos(d_descarga_previa, V_ULTIMO_A_DEPOSITO)
-        t_aprox = tiempo_segundos(d_aprox, V_ESTACION_A_PRIMERO)
-        t_cierre = tiempo_segundos(d_cierre, V_DEPOSITO_A_EST)
-        tramos = [
-            {"tipo": "DescIni", "de": "Estacion", "a": "Relleno", "nodo_de": int(id_estacion), "nodo_a": int(id_relleno), "dur_s": t_descarga_previa, "dist_m": d_descarga_previa},
-            {"tipo": "Aprox", "de": "Relleno", "a": "Recoleccion", "nodo_de": int(id_relleno), "nodo_a": int(primer), "dur_s": t_aprox, "dist_m": d_aprox},
-            {"tipo": "Recol", "de": "Recoleccion", "a": "Recoleccion", "nodo_de": int(primer), "nodo_a": int(ultimo), "dur_s": t_recol_s, "dist_m": d_recol_m},
-            {"tipo": "Cierre", "de": "Recoleccion", "a": "Estacion", "nodo_de": int(ultimo), "nodo_a": int(id_estacion), "dur_s": t_cierre, "dist_m": d_cierre},
-        ]
-        distancias.update({"descarga_previa_m": d_descarga_previa, "aprox_m": d_aprox, "cierre_m": d_cierre})
-        costos.update({"descarga_previa_s": t_descarga_previa, "aprox_s": t_aprox, "cierre_s": t_cierre})
-        origen = "Estacion -> Relleno"
-        origen_nodo = id_estacion
-        fin_nodo = id_estacion
+    d_aprox = D(origen_nodo, primer)
+    d_desc = D(ultimo, id_relleno)
+    t_aprox = tiempo_segundos(d_aprox, V_ESTACION_A_PRIMERO)
+    t_desc = tiempo_segundos(d_desc, V_ULTIMO_A_DEPOSITO)
+    origen_txt = "Estacion" if int(origen_nodo) == int(id_estacion) else "Relleno"
+    tramos = [
+        {"tipo": "Aprox", "de": origen_txt, "a": "Recoleccion", "nodo_de": int(origen_nodo), "nodo_a": int(primer), "dur_s": t_aprox, "dist_m": d_aprox},
+        {"tipo": "Recol", "de": "Recoleccion", "a": "Recoleccion", "nodo_de": int(primer), "nodo_a": int(ultimo), "dur_s": t_recol_s, "dist_m": d_recol_m},
+        {"tipo": "Desc", "de": "Recoleccion", "a": "Relleno", "nodo_de": int(ultimo), "nodo_a": int(id_relleno), "dur_s": t_desc, "dist_m": d_desc},
+    ]
+    distancias = {"aprox_m": d_aprox, "recoleccion_m": d_recol_m, "descarga_m": d_desc, "cierre_m": 0.0}
+    costos = {"aprox_s": t_aprox, "interno_s": t_recol_s, "descarga_s": t_desc, "cierre_s": 0.0}
 
     total_s = sum(float(t["dur_s"]) for t in tramos)
     total_m = sum(float(t["dist_m"]) for t in tramos)
     if not np.isfinite(total_s) or not np.isfinite(total_m):
         return None
-    tiempo_programado_s = max(float(total_s), HORAS_TRABAJO_MIN)
-    costos["balance_turno_s"] = max(0.0, tiempo_programado_s - float(total_s))
-    return {
-        "tramos": tramos,
-        "distancias_m": distancias,
-        "costos": costos,
-        "tiempo_productivo_s": float(total_s),
-        "tiempo_s": float(tiempo_programado_s),
-        "distancia_m": float(total_m),
-        "origen": origen,
-        "origen_nodo": int(origen_nodo),
-        "fin_nodo": int(fin_nodo),
-    }
 
-def construir_camion_servicio(servicio_id, turno_info, fuentes):
-    camino = []
-    carga = 0.0
     zonas = []
-    for fuente in fuentes:
-        camino.extend(list(fuente.get("camino", [])))
-        carga += float(fuente.get("carga", 0.0))
-        if "zona" in fuente:
-            zonas.append(int(fuente["zona"]))
-    if carga > CAPACIDAD_MAXIMA_KG + 0.01:
-        return None
-    evaluacion = evaluar_servicio(camino, turno_info)
-    if evaluacion is None:
-        return None
-    vehiculo_id = int(np.ceil(servicio_id / len(TURNOS_OPERATIVOS)))
-    viaje = {
-        "nodos": camino,
-        "carga": float(carga),
-        "origen": evaluacion["origen"],
-        "origen_nodo": evaluacion["origen_nodo"],
-        "fin_nodo": evaluacion["fin_nodo"],
-        "turno": turno_info["turno"],
-        "horario": turno_info["horario"],
-        "modalidad_descarga": turno_info["descarga"],
-        "estado_inicial_camion": turno_info.get("estado_inicial_camion", "lleno_turno_anterior"),
-        "estado_final_camion": turno_info.get("estado_final_camion", "lleno_turno_actual"),
-        "zonas": sorted(set(zonas)),
-        "costos": evaluacion["costos"],
-        "distancias_m": evaluacion["distancias_m"],
-        "tramos_operativos": evaluacion["tramos"],
-        "ventana_desalojo": turno_info["horario"],
-    }
+    if "zona" in fuente:
+        zonas.append(int(fuente["zona"]))
     return {
-        "id": servicio_id,
-        "vehiculo_id": vehiculo_id,
-        "turno": turno_info["turno"],
-        "horario": turno_info["horario"],
-        "descarga": turno_info["descarga"],
-        "estado_inicial_camion": turno_info.get("estado_inicial_camion", "lleno_turno_anterior"),
-        "estado_final_camion": turno_info.get("estado_final_camion", "lleno_turno_actual"),
-        "descripcion_turno": turno_info["descripcion"],
-        "viajes": [viaje],
-        "tiempo_total_s": evaluacion["tiempo_s"],
-        "tiempo_total_h": evaluacion["tiempo_s"] / 3600.0,
-        "tiempo_productivo_s": evaluacion["tiempo_productivo_s"],
-        "tiempo_productivo_h": evaluacion["tiempo_productivo_s"] / 3600.0,
-        "distancia_total_m": evaluacion["distancia_m"],
-        "retorno_final": turno_info["descarga"] != "fin",
+        "nodos": camino,
+        "carga": carga,
+        "origen": origen_txt,
+        "origen_nodo": int(origen_nodo),
+        "fin_nodo": int(id_relleno),
+        "modalidad_descarga": OPERACION_GENERICA["descarga"],
+        "estado_inicial_camion": OPERACION_GENERICA["estado_inicial_camion"],
+        "estado_final_camion": OPERACION_GENERICA["estado_final_camion"],
+        "zonas": sorted(set(zonas)),
+        "costos": costos,
+        "distancias_m": distancias,
+        "tramos_operativos": tramos,
+        "ventana_desalojo": "Sin restriccion",
+        "tiempo_productivo_s": float(total_s),
+        "distancia_m": float(total_m),
     }
 
-servicios = []
-servicio_id = 1
-camiones = []
-id_camion = 1
+def origen_para_siguiente_viaje(camion):
+    return id_estacion if len(camion.get("viajes", [])) == 0 else id_relleno
 
-def tiempo_viaje_para_camion(viaje, camion):
-    """
-    Si camion aÃºn no tiene viajes => sale estaciÃ³n
-    Si ya tiene => sale relleno
-    """
-    es_primer = (len(camion["viajes"]) == 0)
-    if es_primer:
-        return "EstaciÃ³n", viaje["tiempo_s"]["si_sale_estacion"], viaje["dist_tramos_m"]["aprox_desde_estacion"]
-    else:
-        return "Relleno",  viaje["tiempo_s"]["si_sale_relleno"],  viaje["dist_tramos_m"]["aprox_desde_relleno"]
+def construir_camion_desde_viajes(camion_id, viajes):
+    tiempo_total_s = float(sum(v.get("tiempo_productivo_s", 0.0) for v in viajes))
+    distancia_total_m = float(sum(v.get("distancia_m", 0.0) for v in viajes))
+    if not viajes:
+        return None
+    return {
+        "id": int(camion_id),
+        "vehiculo_id": int(camion_id),
+        "descarga": OPERACION_GENERICA["descarga"],
+        "estado_inicial_camion": OPERACION_GENERICA["estado_inicial_camion"],
+        "estado_final_camion": OPERACION_GENERICA["estado_final_camion"],
+        "descripcion_operacion": OPERACION_GENERICA["descripcion"],
+        "viajes": viajes,
+        "tiempo_total_s": tiempo_total_s,
+        "tiempo_total_h": tiempo_total_s / 3600.0,
+        "tiempo_productivo_s": tiempo_total_s,
+        "tiempo_productivo_h": tiempo_total_s / 3600.0,
+        "distancia_total_m": distancia_total_m,
+        "retorno_final": False,
+    }
 
-def tiempo_viaje_para_camion_programado(viaje, camion):
-    origen, t_base, d_aprox = tiempo_viaje_para_camion(viaje, camion)
-    return origen, t_base, d_aprox, 0.0, "Sin restriccion"
-
-    es_primer = (len(camion["viajes"]) == 0)
-    if es_primer:
-        origen = "EstaciÃ³n"
-        t_base = viaje["tiempo_s"]["si_sale_estacion"]
-        d_aprox = viaje["dist_tramos_m"]["aprox_desde_estacion"]
-    else:
-        origen = "Relleno"
-        t_base = viaje["tiempo_s"]["si_sale_relleno"]
-        d_aprox = viaje["dist_tramos_m"]["aprox_desde_relleno"]
-
-    llegada_relleno_s = INICIO_JORNADA_S + camion["tiempo_s_sin_retorno"] + t_base
-    inicio_desalojo_s, ventana = siguiente_desalojo_programado_s(llegada_relleno_s)
-    if not np.isfinite(inicio_desalojo_s):
-        return origen, np.inf, d_aprox, np.inf, ventana
-
-    espera_s = max(0.0, inicio_desalojo_s - llegada_relleno_s)
-    return origen, t_base + espera_s, d_aprox, espera_s, ventana
-
-def cabe_en_camion(viaje, camion):
-    origen, t_viaje_s, _, _, _ = tiempo_viaje_para_camion_programado(viaje, camion)
-    if not np.isfinite(t_viaje_s):
-        return False
-    # regla estricta: tiempo actual + viaje + retorno <= 8h
-    return (camion["tiempo_s_sin_retorno"] + t_viaje_s + t_retorno_casa) <= HORAS_TRABAJO
-
-def score_best_fit(viaje, camion):
-    """
-    Queremos el camiÃ³n que quede MÃS lleno (proyectado) pero sin pasarse.
-    Score = tiempo proyectado sin retorno (mientras mÃ¡s alto, mejor).
-    """
-    _, t_viaje_s, _, _, _ = tiempo_viaje_para_camion_programado(viaje, camion)
-    return camion["tiempo_s_sin_retorno"] + t_viaje_s
-
-# ---------------------------------------------------------
-# 3) AsignaciÃ³n Best-Fit Decreasing
-# ---------------------------------------------------------
-for viaje in viajes_pendientes:
-    mejor_idx = None
-    mejor_score = -np.inf
-
-    # intentar meterlo en un camiÃ³n existente
-    for k, cam in enumerate(camiones):
-        if cabe_en_camion(viaje, cam):
-            sc = score_best_fit(viaje, cam)
-            if sc > mejor_score:
-                mejor_score = sc
-                mejor_idx = k
-
-    # si no cabe en ninguno, crear camiÃ³n nuevo
-    if mejor_idx is None:
-        camiones.append({
-            "id": id_camion,
-            "viajes": [],
-            "tiempo_s_sin_retorno": 0.0
-        })
-        mejor_idx = len(camiones) - 1
-        id_camion += 1
-
-        # si ni como primer viaje cabe, es un viaje imposible en 8h
-        if not cabe_en_camion(viaje, camiones[mejor_idx]):
-            print("âš ï¸ Viaje no cabe ni como primer viaje con retorno. Revisa parÃ¡metros/velocidades/zona.")
-            continue
-
-    cam = camiones[mejor_idx]
-    origen, t_viaje_s, d_aprox_m, espera_desalojo_s, ventana_desalojo = tiempo_viaje_para_camion_programado(viaje, cam)
-
-    if len(camiones) > NUM_VEHICULOS:
-        print(f"Advertencia: se supero la flota disponible ({NUM_VEHICULOS} camiones).")
-
-    # distancias del viaje
-    ruta = viaje["camino"]
-    d_recol_m = viaje["dist_tramos_m"]["recoleccion"]
-    d_desc_m  = viaje["dist_tramos_m"]["descarga"]
-
-    # tiempos por tramos (aprox/desc por velocidad fija, interno = resto)
-    t_aprox_s = tiempo_segundos(d_aprox_m, V_ESTACION_A_PRIMERO)
-    t_desc_s  = tiempo_segundos(d_desc_m, V_ULTIMO_A_DEPOSITO)
-    t_int_s   = t_viaje_s - t_aprox_s - t_desc_s - espera_desalojo_s
-
-    cam["viajes"].append({
-        "nodos": ruta,
-        "carga": float(viaje["carga"]),
-        "origen": origen,
-        "origen_nodo": int(id_estacion if len(cam["viajes"]) == 0 else id_relleno),
-        "costos": {
-            "aprox_s": float(t_aprox_s),
-            "interno_s": float(max(0.0, t_int_s)),
-            "espera_desalojo_s": float(max(0.0, espera_desalojo_s)),
-            "descarga_s": float(t_desc_s),
-        },
-        "distancias_m": {
-            "aprox_m": float(d_aprox_m),
-            "recoleccion_m": float(d_recol_m),
-            "descarga_m": float(d_desc_m),
-        },
-        "ventana_desalojo": ventana_desalojo,
-    })
-
-    cam["tiempo_s_sin_retorno"] += float(t_viaje_s)
-
-# ---------------------------------------------------------
-# 4) Cerrar turnos (agregar retorno)
-# ---------------------------------------------------------
-camiones_final = []
-for cam in camiones:
-    tiempo_total = cam["tiempo_s_sin_retorno"] + t_retorno_casa
-
-    camiones_final.append({
-        "id": cam["id"],
-        "viajes": cam["viajes"],
-        "tiempo_total_s": float(tiempo_total),
-        "tiempo_total_h": float(tiempo_total / 3600.0),
-        "retorno_final": True
-    })
-
-# imprimir resumen
-for c in camiones_final:
-    print(f"\n--- CamiÃ³n {c['id']} ---")
-    print(f"Viajes asignados: {len(c['viajes'])}")
-    print(f"Tiempo turno: {c['tiempo_total_h']:.2f} horas (incluye retorno)")
-
-camiones = camiones_final
-print(f"\nâ„¹ï¸ Diagnostico modelo anterior: {len(camiones)} camiones si se descarga despues de cada viaje. Se reemplaza por turnos reales abajo.")
-
-# Recalcular la operacion final como servicios de turno reales:
-# una descarga por chofer, sin viajes intermedios al relleno por llenado.
-servicios = []
-servicio_id = 1
+camiones_tmp = []
+camion_id = 1
 for fuente in viajes_pendientes:
     mejor_idx = None
     mejor_score = -np.inf
-    for idx_servicio, servicio in enumerate(servicios):
-        turno_info = next(t for t in TURNOS_OPERATIVOS if t["turno"] == servicio["turno"])
-        fuentes_candidato = servicio["_fuentes"] + [fuente]
-        carga_candidato = sum(float(f.get("carga", 0.0)) for f in fuentes_candidato)
-        if carga_candidato > CAPACIDAD_MAXIMA_KG:
+    for idx_camion, camion in enumerate(camiones_tmp):
+        viaje_candidato = construir_viaje_asignado(fuente, origen_para_siguiente_viaje(camion))
+        if viaje_candidato is None:
             continue
-        zonas_actuales = set()
-        for f in servicio["_fuentes"]:
-            if "zona" in f:
-                zonas_actuales.add(int(f["zona"]))
-        if zonas_actuales and "zona" in fuente and int(fuente["zona"]) not in zonas_actuales:
+        tiempo_candidato = float(camion["tiempo_total_s"]) + float(viaje_candidato["tiempo_productivo_s"])
+        if tiempo_candidato > HORAS_TRABAJO + 1.0:
             continue
-        candidato = construir_camion_servicio(servicio["id"], turno_info, fuentes_candidato)
-        if candidato is None or candidato["tiempo_productivo_s"] > HORAS_TRABAJO:
-            continue
-        carga_pct = carga_candidato / CAPACIDAD_MAXIMA_KG if CAPACIDAD_MAXIMA_KG > 0 else 0.0
-        tiempo_objetivo_s = 7.0 * 3600.0
-        score = (1.5 * carga_pct) - abs(candidato["tiempo_productivo_s"] - tiempo_objetivo_s) / HORAS_TRABAJO
+        score = tiempo_candidato
         if score > mejor_score:
             mejor_score = score
-            mejor_idx = idx_servicio
+            mejor_idx = idx_camion
 
     if mejor_idx is not None:
-        servicio = servicios[mejor_idx]
-        turno_info = next(t for t in TURNOS_OPERATIVOS if t["turno"] == servicio["turno"])
-        servicio["_fuentes"].append(fuente)
-        actualizado = construir_camion_servicio(servicio["id"], turno_info, servicio["_fuentes"])
-        actualizado["_fuentes"] = servicio["_fuentes"]
-        servicios[mejor_idx] = actualizado
+        camion = camiones_tmp[mejor_idx]
+        viaje_asignado = construir_viaje_asignado(fuente, origen_para_siguiente_viaje(camion))
+        camion["viajes"].append(viaje_asignado)
+        actualizado = construir_camion_desde_viajes(camion["id"], camion["viajes"])
+        camiones_tmp[mejor_idx] = actualizado
         continue
 
-    turno_info = TURNOS_OPERATIVOS[(servicio_id - 1) % len(TURNOS_OPERATIVOS)]
-    nuevo = construir_camion_servicio(servicio_id, turno_info, [fuente])
-    if nuevo is None:
-        print("âš ï¸ Servicio no enrutable; se omite una zona.")
+    if camion_id > NUM_VEHICULOS:
+        raise ValueError(
+            f"La solucion requiere mas de {NUM_VEHICULOS} camiones. "
+            "Ajusta zonas/capacidad/tiempos o aumenta la flota disponible."
+        )
+    viaje_nuevo = construir_viaje_asignado(fuente, id_estacion)
+    if viaje_nuevo is None:
+        print("Viaje no enrutable; se omite una zona.")
         continue
-    if nuevo["tiempo_productivo_s"] > HORAS_TRABAJO:
-        print(f"âš ï¸ Servicio {servicio_id} excede 8h ({nuevo['tiempo_total_h']:.2f}h). Se mantiene para no perder cobertura.")
-    nuevo["_fuentes"] = [fuente]
-    servicios.append(nuevo)
-    servicio_id += 1
+    if viaje_nuevo["tiempo_productivo_s"] > HORAS_TRABAJO:
+        print(f"Viaje {camion_id} excede 8h ({viaje_nuevo['tiempo_productivo_s']/3600.0:.2f}h). Se mantiene para no perder cobertura.")
+    camiones_tmp.append(construir_camion_desde_viajes(camion_id, [viaje_nuevo]))
+    camion_id += 1
 
-camiones = []
-for servicio in servicios:
-    servicio.pop("_fuentes", None)
-    camiones.append(servicio)
+camiones = camiones_tmp
 
 servicios_sobrecargados = []
-for servicio in camiones:
-    carga_servicio = sum(float(v.get("carga", 0.0)) for v in servicio.get("viajes", []))
-    if carga_servicio > CAPACIDAD_MAXIMA_KG + 0.01:
-        servicios_sobrecargados.append((servicio.get("id"), carga_servicio))
+for camion in camiones:
+    for i_viaje, viaje in enumerate(camion.get("viajes", []), start=1):
+        carga_viaje = float(viaje.get("carga", 0.0))
+        if carga_viaje > CAPACIDAD_MAXIMA_KG + 0.01:
+            servicios_sobrecargados.append((camion.get("id"), i_viaje, carga_viaje))
 if servicios_sobrecargados:
     raise ValueError(
-        "Servicios sobre capacidad maxima de "
+        "Viajes sobre capacidad maxima de "
         f"{CAPACIDAD_MAXIMA_KG:.0f} kg: {servicios_sobrecargados}"
     )
 
 for c in camiones:
     carga = sum(float(v.get("carga", 0.0)) for v in c["viajes"])
-    paradas = sum(len(v.get("nodos", [])) for v in c["viajes"])
-    print(f"\n--- Servicio {c['id']} | Vehiculo {c['vehiculo_id']} | Turno {c['turno']} ({c['horario']}) ---")
-    print("Flujo: Estacion llena -> Relleno descarga -> Recoleccion -> Estacion llena")
-    print(f"Carga: {carga:.2f} kg | Paradas: {paradas} | Tiempo programado: {c['tiempo_total_h']:.2f} h | Productivo: {c.get('tiempo_productivo_h', c['tiempo_total_h']):.2f} h")
+    print(f"\n--- Camion {c['vehiculo_id']} ---")
+    print("Flujo por viaje: Estacion/Relleno -> Recoleccion -> Relleno")
+    print(f"Viajes: {len(c['viajes'])} | Carga jornada: {carga:.2f} kg | Tiempo productivo: {c.get('tiempo_productivo_h', c['tiempo_total_h']):.2f} h")
 
 vehiculos_fisicos = len(set(c['vehiculo_id'] for c in camiones))
 if vehiculos_fisicos > NUM_VEHICULOS:
-    print(f"âš ï¸ Se requieren {vehiculos_fisicos} vehÃ­culos fÃ­sicos y el mÃ¡ximo disponible es {NUM_VEHICULOS}.")
-print(f"\nâœ… RESUMEN FINAL POR TURNOS: {len(camiones)} servicios, {vehiculos_fisicos} vehÃ­culos fÃ­sicos estimados de {NUM_VEHICULOS} disponibles.")
+    raise ValueError(f"Se requieren {vehiculos_fisicos} camiones y el maximo disponible es {NUM_VEHICULOS}.")
+print(f"\nRESUMEN FINAL: {sum(len(c.get('viajes', [])) for c in camiones)} viajes, {vehiculos_fisicos} camiones usados de {NUM_VEHICULOS} disponibles.")
 
 # CELDA 7 (COMPLETA): Densidad poblacional real (hab/kmÂ²) por nodo usando raster de densidad + fallback vecindario
 import geopandas as gpd
@@ -1726,8 +1615,127 @@ def best_edge_attr(G, u, v, attr, default=0.0):
         return float(best if best is not None else default)
     return float(data.get(attr, default))
 
+def _safe_float_geom(x, default=np.inf):
+    try:
+        val = float(x)
+        return val if np.isfinite(val) else default
+    except Exception:
+        return default
+
+def best_edge_data(G, u, v):
+    data = G.get_edge_data(u, v)
+    if data is None:
+        return {}
+    if isinstance(data, dict) and all(isinstance(attrs, dict) for attrs in data.values()):
+        def edge_score(attrs):
+            return (
+                _safe_float_geom(attrs.get("travel_time", np.inf)),
+                _safe_float_geom(attrs.get("length", np.inf)),
+            )
+        return min(data.values(), key=edge_score)
+    return data if isinstance(data, dict) else {}
+
+def _dist2_xy(a, b):
+    return (float(a[0]) - float(b[0])) ** 2 + (float(a[1]) - float(b[1])) ** 2
+
+def edge_coords_directed(G, u, v):
+    attrs = best_edge_data(G, u, v)
+    geom_edge = attrs.get("geometry")
+    coords = []
+    if geom_edge is not None:
+        try:
+            if isinstance(geom_edge, str):
+                from shapely import wkt
+                geom_edge = wkt.loads(geom_edge)
+            if geom_edge.geom_type == "LineString":
+                coords = list(geom_edge.coords)
+            elif geom_edge.geom_type == "MultiLineString":
+                for line in geom_edge.geoms:
+                    coords.extend(list(line.coords))
+        except Exception:
+            coords = []
+
+    if len(coords) < 2:
+        coords = [(G.nodes[u]["x"], G.nodes[u]["y"]), (G.nodes[v]["x"], G.nodes[v]["y"])]
+
+    u_xy = (G.nodes[u]["x"], G.nodes[u]["y"])
+    v_xy = (G.nodes[v]["x"], G.nodes[v]["y"])
+    normal = _dist2_xy(coords[0], u_xy) + _dist2_xy(coords[-1], v_xy)
+    invertida = _dist2_xy(coords[0], v_xy) + _dist2_xy(coords[-1], u_xy)
+    if invertida + 1e-18 < normal:
+        coords = list(reversed(coords))
+    return coords
+
+def path_to_coords(G, path):
+    if not path or len(path) < 2:
+        return []
+    coords = []
+    for u, v in zip(path[:-1], path[1:]):
+        seg = edge_coords_directed(G, u, v)
+        if coords and seg and _dist2_xy(coords[-1], seg[0]) < 1e-18:
+            coords.extend(seg[1:])
+        else:
+            coords.extend(seg)
+    return coords
+
 def path_to_linestring(G, path):
-    coords = [(G.nodes[n]['x'], G.nodes[n]['y']) for n in path]
+    coords = path_to_coords(G, path)
+    return LineString(coords) if len(coords) >= 2 else None
+
+def tiene_retroceso_inmediato(path):
+    if not path or len(path) < 3:
+        return False
+    return any(a == c for a, _, c in zip(path[:-2], path[1:-1], path[2:]))
+
+def shortest_path_sin_retroceso(G, source, target, weight="travel_time"):
+    try:
+        base = nx.shortest_path(G, source, target, weight=weight)
+        if not tiene_retroceso_inmediato(base):
+            return base
+    except Exception:
+        base = None
+
+    import heapq
+    start_state = (None, source)
+    heap = [(0.0, None, source, [source])]
+    best = {start_state: 0.0}
+
+    while heap:
+        cost, prev, current, path = heapq.heappop(heap)
+        if current == target:
+            return path
+        if cost > best.get((prev, current), np.inf) + 1e-9:
+            continue
+        vecinos = G.successors(current) if hasattr(G, "successors") else G.neighbors(current)
+        for nxt in vecinos:
+            if prev is not None and nxt == prev:
+                continue
+            edge_w = best_edge_attr(G, current, nxt, weight, np.inf)
+            if not np.isfinite(edge_w):
+                edge_w = best_edge_attr(G, current, nxt, "length", np.inf)
+            if not np.isfinite(edge_w):
+                continue
+            new_cost = cost + float(edge_w)
+            state = (current, nxt)
+            if new_cost + 1e-9 < best.get(state, np.inf):
+                best[state] = new_cost
+                heapq.heappush(heap, (new_cost, current, nxt, path + [nxt]))
+
+    if base is not None:
+        return base
+    return nx.shortest_path(G, source, target, weight=weight)
+
+def routed_sequence_to_linestring(G, nodos_ruta):
+    if not nodos_ruta or len(nodos_ruta) < 2:
+        return None
+    coords = []
+    for a, b in zip(nodos_ruta[:-1], nodos_ruta[1:]):
+        seg_path = shortest_path_sin_retroceso(G, a, b, weight="travel_time")
+        seg_coords = path_to_coords(G, seg_path)
+        if coords and seg_coords and _dist2_xy(coords[-1], seg_coords[0]) < 1e-18:
+            coords.extend(seg_coords[1:])
+        else:
+            coords.extend(seg_coords)
     return LineString(coords) if len(coords) >= 2 else None
 
 def path_dist_m(G, path):
@@ -1859,16 +1867,9 @@ for camion in camiones:
                 tipo = tramo_op.get("tipo", "Tramo")
                 try:
                     if tipo == "Recol":
-                        coords_recol = []
-                        for k in range(len(nodos_ruta) - 1):
-                            seg = nx.shortest_path(G_RUTEO, nodos_ruta[k], nodos_ruta[k+1], weight="travel_time")
-                            if k == 0:
-                                coords_recol += [(G_RUTEO.nodes[n]['x'], G_RUTEO.nodes[n]['y']) for n in seg]
-                            else:
-                                coords_recol += [(G_RUTEO.nodes[n]['x'], G_RUTEO.nodes[n]['y']) for n in seg[1:]]
-                        geom_line = LineString(coords_recol) if len(coords_recol) >= 2 else None
+                        geom_line = routed_sequence_to_linestring(G_RUTEO, nodos_ruta)
                     else:
-                        path = nx.shortest_path(
+                        path = shortest_path_sin_retroceso(
                             G_RUTEO,
                             int(tramo_op["nodo_de"]),
                             int(tramo_op["nodo_a"]),
@@ -1880,8 +1881,7 @@ for camion in camiones:
                         features.append({
                             "Camion": c_id,
                             "Vehiculo": int(camion.get("vehiculo_id", c_id)),
-                            "Turno": int(viaje.get("turno", camion.get("turno", 0))),
-                            "Horario": viaje.get("horario", camion.get("horario", "")),
+                            "Operacion": camion.get("descripcion_operacion", "Estacion -> Recoleccion -> Relleno"),
                             "Viaje": i,
                             "Tramo": tipo,
                             "De": tramo_op.get("de", ""),
@@ -1913,7 +1913,7 @@ for camion in camiones:
             de_aprox = "Estacion" if origen_nodo == id_estacion else "Relleno"
 
         try:
-            path = nx.shortest_path(G_RUTEO, origen_nodo, primer, weight="travel_time")
+            path = shortest_path_sin_retroceso(G_RUTEO, origen_nodo, primer, weight="travel_time")
             geom_line = path_to_linestring(G_RUTEO, path)
             if geom_line is not None:
                 features.append({
@@ -1932,16 +1932,9 @@ for camion in camiones:
             pass
 
         # TRAMO 2: RECOLECCIÃ“N
-        coords_recol = []
         try:
-            for k in range(len(nodos_ruta) - 1):
-                seg = nx.shortest_path(G_RUTEO, nodos_ruta[k], nodos_ruta[k+1], weight="travel_time")
-                if k == 0:
-                    coords_recol += [(G_RUTEO.nodes[n]['x'], G_RUTEO.nodes[n]['y']) for n in seg]
-                else:
-                    coords_recol += [(G_RUTEO.nodes[n]['x'], G_RUTEO.nodes[n]['y']) for n in seg[1:]]
-
-            if len(coords_recol) >= 2:
+            geom_recol = routed_sequence_to_linestring(G_RUTEO, nodos_ruta)
+            if geom_recol is not None:
                 dist_recol = dist_recoleccion_m(G_RUTEO, nodos_ruta)
 
                 features.append({
@@ -1953,7 +1946,7 @@ for camion in camiones:
                     "dur_s": float(viaje["costos"]["interno_s"]),
                     "dist_m": dist_recol,
                     "orden": orden_local,
-                    "geometry": LineString(coords_recol)
+                    "geometry": geom_recol
                 })
                 orden_local += 1
         except:
@@ -1961,7 +1954,7 @@ for camion in camiones:
 
         # TRAMO 3: DESCARGA
         try:
-            path = nx.shortest_path(G_RUTEO, ultimo, id_relleno, weight="travel_time")
+            path = shortest_path_sin_retroceso(G_RUTEO, ultimo, id_relleno, weight="travel_time")
             geom_line = path_to_linestring(G_RUTEO, path)
             if geom_line is not None:
                 features.append({
@@ -1979,10 +1972,10 @@ for camion in camiones:
         except:
             pass
 
-    # FIN DEL TURNO (solo para el modelo anterior; el modelo por turnos ya trae Cierre/DescIni)
+    # Cierre generico solo para el modelo anterior sin tramos_operativos.
     if not usa_tramos_operativos:
         try:
-            path = nx.shortest_path(G_RUTEO, id_relleno, id_estacion, weight="travel_time")
+            path = shortest_path_sin_retroceso(G_RUTEO, id_relleno, id_estacion, weight="travel_time")
             geom_line = path_to_linestring(G_RUTEO, path)
             if geom_line is not None:
                 dur_fin = float(globals().get("t_retorno_casa", path_time_s(G_RUTEO, path)))
@@ -2112,15 +2105,14 @@ for camion in camiones:
                     "Dist_km": float(tramo.get("dist_m", 0.0)) / 1000.0,
                     "Min": float(tramo.get("dur_s", 0.0)) / 60.0,
                     "Vehiculo": int(camion.get("vehiculo_id", c_id)),
-                    "Turno": int(viaje.get("turno", camion.get("turno", 0))),
-                    "Horario": viaje.get("horario", camion.get("horario", "")),
+                    "Operacion": camion.get("descripcion_operacion", "Estacion -> Recoleccion -> Relleno"),
                 })
             balance_s = float((viaje.get("costos", {}) or {}).get("balance_turno_s", 0.0))
             if balance_s > 0:
                 filas.append({
                     "CamiÃ³n": c_id,
                     "Paso": f"V{v_num}-B",
-                    "Tramo": "Balance turno",
+                    "Tramo": "Holgura operativa",
                     "De": "Operacion",
                     "A": "Operacion",
                     "Nodo_De": 0,
@@ -2130,8 +2122,7 @@ for camion in camiones:
                     "Dist_km": 0.0,
                     "Min": balance_s / 60.0,
                     "Vehiculo": int(camion.get("vehiculo_id", c_id)),
-                    "Turno": int(viaje.get("turno", camion.get("turno", 0))),
-                    "Horario": viaje.get("horario", camion.get("horario", "")),
+                    "Operacion": camion.get("descripcion_operacion", "Estacion -> Recoleccion -> Relleno"),
                 })
             continue
 
@@ -2206,13 +2197,13 @@ for camion in camiones:
     if usa_tramos_operativos:
         continue
 
-    # FIN DE TURNO: Relleno -> EstaciÃ³n
+    # Cierre generico: Relleno -> Estacion
     d_fin_km = dist_km_ruteada(G_RUTEO, id_relleno, id_estacion)
 
     filas.append({
         "CamiÃ³n": c_id,
         "Paso": "FIN",
-        "Tramo": "Rellenoâ†’EstaciÃ³n (fin turno)",
+        "Tramo": "Rellenoâ†’Estacion (cierre)",
         "De": "Relleno",
         "A": "EstaciÃ³n",
         "Nodo_De": int(id_relleno),
@@ -2277,7 +2268,7 @@ total_paradas = int(res["Paradas_en_recolecciÃ³n"].sum())
 
 print("\n=== RESUMEN GLOBAL (FLOTA) ===")
 print(f"Camiones usados: {total_camiones}")
-print(f"Servicios/turnos: {total_servicios}")
+print(f"Rutas asignadas: {total_servicios}")
 print(f"Basura total: {total_ton:.2f} ton")
 print(f"Distancia total: {total_km:.2f} km")
 print(f"Tiempo total flota: {total_h:.2f} h")
@@ -2460,6 +2451,30 @@ for c in CAMIONES:
 # -----------------------------
 # 3) Datos resumidos para el tablero HTML
 # -----------------------------
+carga_total_html_kg = float(sum(
+    sum(float(v.get("carga", 0.0)) for v in c.get("viajes", []))
+    for c in camiones
+))
+distancia_total_html_m = float(sum(
+    sum(
+        sum(float(x or 0.0) for x in (v.get("distancias_m", {}) or {}).values())
+        for v in c.get("viajes", [])
+    )
+    for c in camiones
+))
+distancia_total_html_km = distancia_total_html_m / 1000.0
+tiempo_total_html_h = float(sum(float(c.get("tiempo_total_h", 0.0)) for c in camiones))
+costo_diesel_html_usd = (
+    distancia_total_html_km / RENDIMIENTO_KM_GAL * PRECIO_DIESEL_USD_GAL
+    if distancia_total_html_km > 0 and RENDIMIENTO_KM_GAL > 0
+    else 0.0
+)
+eficiencia_html_ton_km = (
+    (carga_total_html_kg / 1000.0) / distancia_total_html_km
+    if distancia_total_html_km > 0
+    else 0.0
+)
+
 metricas_html = {
     "global": {
         "camiones_usados": len(set(c.get("vehiculo_id", c.get("id", None)) for c in camiones)),
@@ -2467,9 +2482,12 @@ metricas_html = {
         "servicios_asignados": len(camiones),
         "viajes_asignados": int(sum(len(c.get("viajes", [])) for c in camiones)),
         "clientes": int(len(nodos_clientes)) if "nodos_clientes" in globals() else 0,
-        "carga_total_kg": float(sum(sum(float(v.get("carga", 0.0)) for v in c.get("viajes", [])) for c in camiones)),
+        "carga_total_kg": carga_total_html_kg,
         "capacidad_camion_kg": float(CAPACIDAD_MAXIMA_KG),
-        "tiempo_total_h": float(sum(float(c.get("tiempo_total_h", 0.0)) for c in camiones)),
+        "distancia_total_km": distancia_total_html_km,
+        "eficiencia_ton_km": eficiencia_html_ton_km,
+        "tiempo_total_h": tiempo_total_html_h,
+        "costo_diesel_usd": costo_diesel_html_usd,
     },
     "camiones": [],
     "viajes": [],
@@ -2486,17 +2504,16 @@ for c in camiones:
     tiempo_viajes_s = float(sum(
         sum(float(x or 0.0) for x in (v.get("costos", {}) or {}).values())
         for v in viajes
-    ))
+        ))
     metricas_html["camiones"].append({
         "id": c_id,
         "vehiculo": int(c.get("vehiculo_id", c_id)),
-        "turno": int(c.get("turno", 0)),
-        "horario": c.get("horario", ""),
         "descarga": c.get("descarga", ""),
+        "operacion": c.get("descripcion_operacion", "Estacion -> Recoleccion -> Relleno"),
         "viajes": len(viajes),
         "carga_kg": carga,
+        "carga_max_viaje_kg": float(max([float(v.get("carga", 0.0)) for v in viajes] + [0.0])),
         "capacidad_kg": float(CAPACIDAD_MAXIMA_KG),
-        "paradas": int(sum(len(v.get("nodos", []) or []) for v in viajes)),
         "distancia_km": distancia_m / 1000.0,
         "tiempo_h": float(c.get("tiempo_total_h", 0.0)),
         "tiempo_viajes_min": tiempo_viajes_s / 60.0,
@@ -2508,20 +2525,15 @@ for c in camiones:
         metricas_html["viajes"].append({
             "camion": c_id,
             "vehiculo": int(c.get("vehiculo_id", c_id)),
-            "turno": int(v.get("turno", c.get("turno", 0))),
-            "horario": v.get("horario", c.get("horario", "")),
             "descarga": v.get("modalidad_descarga", c.get("descarga", "")),
             "viaje": idx_v,
             "origen": v.get("origen", "N/A"),
-            "paradas": int(len(v.get("nodos", []) or [])),
             "carga_kg": float(v.get("carga", 0.0)),
             "capacidad_kg": float(CAPACIDAD_MAXIMA_KG),
-            "descarga_previa_km": float(dist.get("descarga_previa_m", 0.0)) / 1000.0,
             "aprox_km": float(dist.get("aprox_m", 0.0)) / 1000.0,
             "recoleccion_km": float(dist.get("recoleccion_m", 0.0)) / 1000.0,
             "descarga_km": float(dist.get("descarga_m", 0.0)) / 1000.0,
             "cierre_km": float(dist.get("cierre_m", 0.0)) / 1000.0,
-            "descarga_previa_min": float(costos.get("descarga_previa_s", 0.0)) / 60.0,
             "aprox_min": float(costos.get("aprox_s", 0.0)) / 60.0,
             "recoleccion_min": float(costos.get("interno_s", 0.0)) / 60.0,
             "espera_desalojo_min": float(costos.get("espera_desalojo_s", 0.0)) / 60.0,
@@ -2538,7 +2550,7 @@ html = """<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="utf-8" />
-  <title>Rutas animadas (Servicios por turno)</title>
+  <title>Rutas animadas de recoleccion</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link
     rel="stylesheet"
@@ -2586,7 +2598,6 @@ html = """<!DOCTYPE html>
     .section:not([open]) summary::after { content: "Mostrar"; }
     .section-content { border-top: 1px solid var(--line); padding: 10px 12px 12px; }
     .small { font-size: 12px; color: var(--muted); line-height: 1.35; }
-    .filter-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
     .metric-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
     .metric { border: 1px solid var(--line); border-radius: 7px; padding: 10px; background: var(--surface-solid); min-height: 64px; }
     .metric .label { display: block; color: var(--muted); font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; }
@@ -2635,7 +2646,7 @@ html = """<!DOCTYPE html>
 <header class="glass topbar">
   <div class="brand">
     <p class="eyebrow">Operacion urbana</p>
-    <h1 class="headline">Servicios por turno de recoleccion</h1>
+    <h1 class="headline">Rutas de recoleccion optimizadas</h1>
   </div>
   <div class="top-actions">
     <button id="btnPlayPremium" class="btn accent">Play</button>
@@ -2677,13 +2688,7 @@ html = """<!DOCTYPE html>
       <details class="section" open>
         <summary>Capas</summary>
         <div class="section-content">
-          <p class="small">Cada ruta visible es un servicio de turno. El numero de servicio no es el numero de camiones fisicos; varios servicios pueden usar el mismo vehiculo en horarios distintos.</p>
-          <div class="filter-row" role="group" aria-label="Filtro por turno">
-            <button id="btnTurnoAll" class="btn filter active" type="button">Todos</button>
-            <button id="btnTurno1" class="btn secondary filter" type="button">Ma&ntilde;ana</button>
-            <button id="btnTurno2" class="btn secondary filter" type="button">Tarde</button>
-            <button id="btnTurno3" class="btn secondary filter" type="button">Noche</button>
-          </div>
+          <p class="small">Cada ruta visible corresponde a un camion asignado. Todas las rutas respetan capacidad maxima, flujo Estacion -> Recoleccion -> Relleno y sentidos del grafo vial.</p>
         </div>
       </details>
     </div>
@@ -2698,7 +2703,7 @@ html = """<!DOCTYPE html>
     </div>
     <div class="panel-body">
       <details class="section" open>
-        <summary>Servicios por turno</summary>
+        <summary>Rutas asignadas</summary>
         <div class="section-content">
           <div id="truckCardsPremium"></div>
         </div>
@@ -2710,7 +2715,7 @@ html = """<!DOCTYPE html>
           <div class="route-table-wrap">
             <table class="route-table">
               <thead>
-                <tr><th>Servicio</th><th>Vehiculo</th><th>Turno</th><th>Operacion</th><th>Km</th><th>Min</th></tr>
+                <tr><th>Ruta</th><th>Camion</th><th>Operacion</th><th>Km</th><th>Min</th></tr>
               </thead>
               <tbody id="routeRowsPremium"></tbody>
             </table>
@@ -2723,7 +2728,7 @@ html = """<!DOCTYPE html>
 
 <div class="control-panel">
   <p class="panel-title">Operacion urbana</p>
-  <h1 class="headline">Servicios por turno de recoleccion</h1>
+  <h1 class="headline">Rutas de recoleccion optimizadas</h1>
   <div class="row">
     <button id="btnPlay" class="btn">â–¶ Reproducir</button>
     <button id="btnPause" class="btn" style="background:#6b7280;">â¸ Pausa</button>
@@ -2746,14 +2751,14 @@ html = """<!DOCTYPE html>
 <section class="panel summary-panel">
   <div class="summary-head">
     <p class="panel-title">Resumen operativo</p>
-    <h2 class="headline" style="font-size:18px;margin-bottom:0;">Servicios, turnos y tramos</h2>
+    <h2 class="headline" style="font-size:18px;margin-bottom:0;">Rutas y tramos</h2>
   </div>
   <div class="summary-body">
     <div id="truckCards"></div>
     <div class="routes-title">Detalle de rutas</div>
     <table class="route-table">
       <thead>
-        <tr><th>Servicio</th><th>Vehiculo</th><th>Turno</th><th>Operacion</th><th>Km</th><th>Min</th></tr>
+        <tr><th>Ruta</th><th>Camion</th><th>Operacion</th><th>Km</th><th>Min</th></tr>
       </thead>
       <tbody id="routeRows"></tbody>
     </table>
@@ -2820,7 +2825,7 @@ html = """<!DOCTYPE html>
     style: { color: "#22c55e", weight: 2, opacity: 0.55 }
   });
 
-  // Rutas por servicio/turno (lineas)
+  // Rutas por camion (lineas)
   const coloresSectores = ["#0f766e", "#2563eb", "#ca8a04", "#7c3aed", "#dc2626", "#0891b2", "#16a34a", "#be185d", "#475569", "#ea580c"];
   const layerSectores = L.geoJSON(SECTORES, {
     style: f => {
@@ -2867,6 +2872,13 @@ html = """<!DOCTYPE html>
     return `<div class="metric"><span class="label">${label}</span><span class="value">${value}</span></div>`;
   }
 
+  function formatHours(totalHours) {
+    const totalMin = Math.round(Number(totalHours || 0) * 60);
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    return `${h}h ${String(m).padStart(2, "0")}m`;
+  }
+
   function capacidadTon(item) {
     return Number((item && item.capacidad_kg) || (METRICAS.global && METRICAS.global.capacidad_camion_kg) || 12000) / 1000;
   }
@@ -2879,13 +2891,20 @@ html = """<!DOCTYPE html>
   function renderDashboard() {
     const global = METRICAS.global || {};
     const totalKm = (METRICAS.camiones || []).reduce((acc, c) => acc + (c.distancia_km || 0), 0);
+    const cargaTotalTon = Number(global.carga_total_kg || 0) / 1000;
+    const distanciaTotalKm = Number(global.distancia_total_km || totalKm || 0);
+    const eficienciaTonKm = Number(global.eficiencia_ton_km || (distanciaTotalKm > 0 ? cargaTotalTon / distanciaTotalKm : 0));
+    const costoDiesel = Number(global.costo_diesel_usd || (distanciaTotalKm > 0 ? distanciaTotalKm / 4.5 * 2.99 : 0));
     const globalBox = document.getElementById("globalMetricsPremium");
     if (globalBox) {
       globalBox.innerHTML = [
-        metric("Vehiculos", `${fmt0.format(global.camiones_usados || 0)} / ${fmt0.format(global.camiones_maximos || 0)}`),
-        metric("Servicios", fmt0.format(global.servicios_asignados || 0)),
-        metric("Carga", `${fmt.format((global.carga_total_kg || 0) / 1000)} t`),
-        metric("Tiempo", `${fmt.format(global.tiempo_total_h || 0)} h`)
+        metric("Viajes", fmt0.format(global.viajes_asignados || 0)),
+        metric("Camiones", `${fmt0.format(global.camiones_usados || 0)} / ${fmt0.format(global.camiones_maximos || 0)}`),
+        metric("Carga", `${fmt.format(cargaTotalTon)} t`),
+        metric("Distancia", `${fmt.format(distanciaTotalKm)} km`),
+        metric("Eficiencia", `${eficienciaTonKm.toFixed(4)} ton/km`),
+        metric("Jornada", formatHours(global.tiempo_total_h || 0)),
+        metric("Costo", `$${fmt.format(costoDiesel)}`)
       ].join("");
     }
 
@@ -2893,23 +2912,24 @@ html = """<!DOCTYPE html>
     if (cards) {
       cards.innerHTML = (METRICAS.camiones || []).map(c => {
         const color = colores[String(c.id)] || "#111827";
-        const carga = cargaTon(c);
         const capacidad = capacidadTon(c);
-        const cargaPct = capacidad > 0 ? Math.min(100, (carga / capacidad) * 100) : 0;
+        const cargaTotal = Number(c.carga_kg || 0) / 1000;
+        const cargaMaxViaje = Number(c.carga_max_viaje_kg || 0) / 1000;
+        const cargaPct = capacidad > 0 ? Math.min(100, (cargaMaxViaje / capacidad) * 100) : 0;
         return `
           <article class="truck-card" id="truckCard-${c.id}" style="color:${color}">
             <div class="truck-top">
-              <div class="truck-name"><span class="swatch" style="background:${color}"></span>Servicio ${c.id}</div>
-              <span class="pill">Vehiculo ${c.vehiculo || "-"}</span>
+              <div class="truck-name"><span class="swatch" style="background:${color}"></span>Camion ${c.vehiculo || c.id}</div>
+              <span class="pill">${fmt0.format(c.viajes || 0)} viajes</span>
             </div>
-            <div class="small" style="margin:-4px 0 8px;">Turno ${c.turno || "-"} Â· ${c.horario || "-"} Â· ${c.descarga === "fin" ? "descarga al final" : "descarga al inicio"}</div>
+            <div class="small" style="margin:-4px 0 8px;">${c.operacion || "Estacion -> Recoleccion -> Relleno"}</div>
             <div class="stat-line">
-              <div><b>${fmt.format(c.tiempo_h || 0)}</b><span>h turno</span></div>
-              <div><b>${fmt0.format(c.paradas || 0)}</b><span>paradas</span></div>
+              <div><b>${fmt.format(c.tiempo_h || 0)}</b><span>h jornada</span></div>
+              <div><b>${fmt0.format(c.viajes || 0)}</b><span>viajes</span></div>
               <div><b>${fmt.format(c.distancia_km || 0)}</b><span>km</span></div>
             </div>
             <div class="progress" style="--p:${cargaPct}%"><i></i></div>
-            <div class="small" style="margin-top:7px;">Capacidad: ${fmt.format(capacidad)} t - Carga asignada: ${fmt.format(carga)} t - Uso carga: ${fmt.format(cargaPct)}%</div>
+            <div class="small" style="margin-top:7px;">Carga jornada: ${fmt.format(cargaTotal)} t - Mayor viaje: ${fmt.format(cargaMaxViaje)} / ${fmt.format(capacidad)} t</div>
           </article>
         `;
       }).join("");
@@ -2920,14 +2940,11 @@ html = """<!DOCTYPE html>
       rows.innerHTML = (METRICAS.viajes || []).flatMap(v => {
         const c = String(v.camion);
         const color = colores[c] || "#111827";
-        const base = `<td><span class="swatch" style="background:${color}"></span>${v.camion}</td><td>${v.vehiculo || "-"}</td><td>${v.turno || "-"}<br><span class="small">${v.horario || ""}</span></td>`;
+        const base = `<td><span class="swatch" style="background:${color}"></span>${v.camion}</td><td>${v.vehiculo || "-"}</td>`;
         const out = [];
-        if ((v.descarga_previa_km || 0) > 0 || (v.descarga_previa_min || 0) > 0) {
-          out.push(`<tr data-camion="${c}">${base}<td>Descarga inicial Estacion -> Relleno</td><td>${fmt.format(v.descarga_previa_km || 0)}</td><td>${fmt.format(v.descarga_previa_min || 0)}</td></tr>`);
-        }
         out.push(`<tr data-camion="${c}">${base}<td>Aproximacion desde ${v.origen}</td><td>${fmt.format(v.aprox_km || 0)}</td><td>${fmt.format(v.aprox_min || 0)}</td></tr>`);
         const cargaTxt = `${fmt.format(cargaTon(v))} / ${fmt.format(capacidadTon(v))} t`;
-        out.push(`<tr data-camion="${c}">${base}<td>Recoleccion (${fmt0.format(v.paradas || 0)} paradas, ${cargaTxt})</td><td>${fmt.format(v.recoleccion_km || 0)}</td><td>${fmt.format(v.recoleccion_min || 0)}</td></tr>`);
+        out.push(`<tr data-camion="${c}">${base}<td>Recoleccion (${cargaTxt})</td><td>${fmt.format(v.recoleccion_km || 0)}</td><td>${fmt.format(v.recoleccion_min || 0)}</td></tr>`);
         if ((v.descarga_km || 0) > 0 || (v.descarga_min || 0) > 0) {
           out.push(`<tr data-camion="${c}">${base}<td>Descarga final en relleno</td><td>${fmt.format(v.descarga_km || 0)}</td><td>${fmt.format(v.descarga_min || 0)}</td></tr>`);
         }
@@ -2935,7 +2952,7 @@ html = """<!DOCTYPE html>
           out.push(`<tr data-camion="${c}">${base}<td>Cierre: regreso al punto de inicio</td><td>${fmt.format(v.cierre_km || 0)}</td><td>${fmt.format(v.cierre_min || 0)}</td></tr>`);
         }
         if ((v.balance_turno_min || 0) > 0) {
-          out.push(`<tr data-camion="${c}">${base}<td>Balance operativo del turno</td><td>0</td><td>${fmt.format(v.balance_turno_min || 0)}</td></tr>`);
+          out.push(`<tr data-camion="${c}">${base}<td>Holgura operativa</td><td>0</td><td>${fmt.format(v.balance_turno_min || 0)}</td></tr>`);
         }
         return out;
       }).join("");
@@ -2953,7 +2970,7 @@ html = """<!DOCTYPE html>
   if (CALLES.features && CALLES.features.length > 0) overlays["Calles (base)"] = layerCalles;
 
   Object.keys(layerRutas).forEach(k => {
-    overlays[`Servicio ${k}`] = layerRutas[k];
+    overlays[`Ruta ${k}`] = layerRutas[k];
   });
 
   L.control.layers({ "OSM": osm }, overlays, { collapsed: true }).addTo(map);
@@ -3018,8 +3035,7 @@ html = """<!DOCTYPE html>
 
     const icon = L.divIcon({
       className: '',
-      html: `<div class="truck-icon">ðŸšš</div>`,
-      html: `<div class="truck-icon">S${k}</div>`,
+      html: `<div class="truck-icon">R${k}</div>`,
       iconSize: [22,22],
       iconAnchor: [11,11]
     });
@@ -3062,19 +3078,6 @@ html = """<!DOCTYPE html>
       if (!visible && map.hasLayer(marker)) map.removeLayer(marker);
     }
     setRouteUiState(key, visible);
-  }
-
-  function setTurnoFilter(turno) {
-    const selected = turno ? Number(turno) : null;
-    Object.keys(layerRutas).forEach(id => {
-      const meta = servicioMeta[String(id)] || {};
-      const visible = !selected || Number(meta.turno || 0) === selected;
-      setServiceVisible(id, visible);
-    });
-    document.querySelectorAll(".btn.filter").forEach(btn => btn.classList.remove("active"));
-    const activeId = selected ? `btnTurno${selected}` : "btnTurnoAll";
-    const active = document.getElementById(activeId);
-    if (active) active.classList.add("active");
   }
 
   Object.keys(truckByRoute).forEach(id => setRouteUiState(id, true));
@@ -3142,11 +3145,6 @@ html = """<!DOCTYPE html>
   document.getElementById("btnHideRightPremium").addEventListener("click", toggleRightPanel);
   document.getElementById("btnFocusPremium").addEventListener("click", () => document.body.classList.add("focus-mode"));
   document.getElementById("btnRestoreUiPremium").addEventListener("click", () => document.body.classList.remove("focus-mode"));
-
-  document.getElementById("btnTurnoAll").addEventListener("click", () => setTurnoFilter(null));
-  document.getElementById("btnTurno1").addEventListener("click", () => setTurnoFilter(1));
-  document.getElementById("btnTurno2").addEventListener("click", () => setTurnoFilter(2));
-  document.getElementById("btnTurno3").addEventListener("click", () => setTurnoFilter(3));
 
   document.getElementById("btnPlayPremium").addEventListener("click", () => {
     if (!running) {
@@ -3256,19 +3254,17 @@ for c in camiones:
         t_aprox = safe_float(costos.get("aprox_s", np.nan))
         t_int   = safe_float(costos.get("interno_s", np.nan))
         t_espera = safe_float(costos.get("espera_desalojo_s", 0.0))
-        t_desc_previa = safe_float(costos.get("descarga_previa_s", 0.0))
         t_desc  = safe_float(costos.get("descarga_s", np.nan))
         t_cierre = safe_float(costos.get("cierre_s", 0.0))
         t_balance = safe_float(costos.get("balance_turno_s", 0.0))
-        t_productivo = np.nansum([t_desc_previa, t_aprox, t_int, t_espera, t_desc, t_cierre])
+        t_productivo = np.nansum([t_aprox, t_int, t_espera, t_desc, t_cierre])
         t_total = np.nansum([t_productivo, t_balance])
 
-        d_desc_previa = safe_float(dist.get("descarga_previa_m", 0.0))
         d_aprox = safe_float(dist.get("aprox_m", np.nan))
         d_recol = safe_float(dist.get("recoleccion_m", np.nan))
         d_descm = safe_float(dist.get("descarga_m", np.nan))
         d_cierre = safe_float(dist.get("cierre_m", 0.0))
-        d_total = np.nansum([d_desc_previa, d_aprox, d_recol, d_descm, d_cierre])
+        d_total = np.nansum([d_aprox, d_recol, d_descm, d_cierre])
 
         filas_viajes.append({
             "camion": c_id,
@@ -3278,16 +3274,14 @@ for c in camiones:
             "carga_kg": carga,
 
             "t_aprox_min": t_aprox/60 if np.isfinite(t_aprox) else np.nan,
-            "t_descarga_previa_min": t_desc_previa/60 if np.isfinite(t_desc_previa) else np.nan,
             "t_recol_min": t_int/60   if np.isfinite(t_int)   else np.nan,
             "t_espera_desalojo_min": t_espera/60 if np.isfinite(t_espera) else np.nan,
             "t_desc_min":  t_desc/60  if np.isfinite(t_desc)  else np.nan,
             "t_cierre_min": t_cierre/60 if np.isfinite(t_cierre) else np.nan,
-            "t_balance_turno_min": t_balance/60 if np.isfinite(t_balance) else np.nan,
+            "t_holgura_operativa_min": t_balance/60 if np.isfinite(t_balance) else np.nan,
             "t_productivo_min": t_productivo/60 if np.isfinite(t_productivo) else np.nan,
             "t_total_min": t_total/60 if np.isfinite(t_total) else np.nan,
 
-            "d_descarga_previa_km": d_desc_previa/1000 if np.isfinite(d_desc_previa) else np.nan,
             "d_aprox_km": d_aprox/1000 if np.isfinite(d_aprox) else np.nan,
             "d_recol_km": d_recol/1000 if np.isfinite(d_recol) else np.nan,
             "d_desc_km":  d_descm/1000 if np.isfinite(d_descm) else np.nan,
@@ -3308,12 +3302,10 @@ df_viajes = pd.DataFrame(filas_viajes)
 df_camiones = pd.DataFrame([{
     "camion": c.get("id", None),
     "vehiculo": c.get("vehiculo_id", c.get("id", None)),
-    "turno": c.get("turno", np.nan),
-    "horario": c.get("horario", ""),
     "viajes_asignados": len(c.get("viajes", [])),
-    "tiempo_turno_h": safe_float(c.get("tiempo_total_h", np.nan)),
+    "tiempo_ruta_h": safe_float(c.get("tiempo_total_h", np.nan)),
     "tiempo_productivo_h": safe_float(c.get("tiempo_productivo_h", np.nan)),
-    "tiempo_turno_min": safe_float(c.get("tiempo_total_s", np.nan))/60 if np.isfinite(safe_float(c.get("tiempo_total_s", np.nan))) else np.nan,
+    "tiempo_ruta_min": safe_float(c.get("tiempo_total_s", np.nan))/60 if np.isfinite(safe_float(c.get("tiempo_total_s", np.nan))) else np.nan,
 } for c in camiones])
 
 if len(df_viajes) > 0:
@@ -3331,8 +3323,8 @@ if len(df_viajes) > 0:
 if "dist_total_km" not in df_camiones.columns:
     df_camiones["dist_total_km"] = np.nan
 
-df_camiones["uso_jornada_pct"] = 100 * (df_camiones["tiempo_turno_h"] / HORAS_TRABAJO)
-df_camiones["holgura_min"] = (HORAS_TRABAJO - df_camiones["tiempo_turno_h"]) * 60
+df_camiones["uso_jornada_pct"] = 100 * (df_camiones["tiempo_ruta_h"] / HORAS_TRABAJO)
+df_camiones["holgura_min"] = (HORAS_TRABAJO - df_camiones["tiempo_ruta_h"]) * 60
 df_camiones["galones_estimados"] = df_camiones["dist_total_km"] / RENDIMIENTO_KM_GAL
 df_camiones["costo_diesel_usd"] = df_camiones["galones_estimados"] * PRECIO_DIESEL_USD_GAL
 df_camiones["costo_nomina_mensual_usd"] = (
@@ -3351,7 +3343,7 @@ n_camiones = len(set(c.get("vehiculo_id", c.get("id", None)) for c in camiones))
 n_viajes = len(df_viajes)
 carga_total_asignada = float(df_viajes["carga_kg"].sum()) if n_viajes > 0 else 0.0
 dist_total_km = float(df_viajes["d_total_km"].sum()) if n_viajes > 0 else np.nan
-tiempo_total_h_turnos = float(df_camiones["tiempo_turno_h"].sum()) if len(df_camiones) > 0 else np.nan
+tiempo_total_h_rutas = float(df_camiones["tiempo_ruta_h"].sum()) if len(df_camiones) > 0 else np.nan
 galones_estimados = dist_total_km / RENDIMIENTO_KM_GAL if np.isfinite(dist_total_km) and RENDIMIENTO_KM_GAL > 0 else np.nan
 costo_diesel_usd = galones_estimados * PRECIO_DIESEL_USD_GAL if np.isfinite(galones_estimados) else np.nan
 costo_nomina_mensual_usd = n_camiones * (
@@ -3375,14 +3367,14 @@ print("\n======================")
 print("âœ… KPI GLOBAL")
 print("======================")
 print(f"Camiones usados: {n_camiones}")
-print(f"Servicios/turnos asignados: {n_servicios}")
+print(f"Rutas asignadas: {n_servicios}")
 print(f"Viajes asignados: {n_viajes}")
 print(f"Nodos clientes: {len(nodos_clientes)}")
 print(f"Demanda total (kg): {total_demanda:,.2f}")
 print(f"Carga total asignada (kg): {carga_total_asignada:,.2f}")
 print(f"Error carga vs demanda: {error_kg:,.2f} kg  ({error_rel_pct:.3f}%)")
 print(f"Distancia total (km): {dist_total_km:,.2f}" if np.isfinite(dist_total_km) else "Distancia total: N/A")
-print(f"Tiempo total sumado de turnos (h): {tiempo_total_h_turnos:,.2f}" if np.isfinite(tiempo_total_h_turnos) else "Tiempo total: N/A")
+print(f"Tiempo total sumado de rutas (h): {tiempo_total_h_rutas:,.2f}" if np.isfinite(tiempo_total_h_rutas) else "Tiempo total: N/A")
 print(f"Diesel estimado: {galones_estimados:,.2f} gal | Costo: ${costo_diesel_usd:,.2f}" if np.isfinite(costo_diesel_usd) else "Diesel estimado: N/A")
 print(f"Costo nomina mensual flota: ${costo_nomina_mensual_usd:,.2f}")
 print(f"Gini de basura: {gini_demanda:.3f}")
