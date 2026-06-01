@@ -1042,6 +1042,9 @@ rutas_base_bryan = ejecutar_clarke_wright_dist(
     max_capacidad=CAPACIDAD_MAXIMA_KG,
 )
 
+metricas_base = metricas_rutas(rutas_base_bryan, dist_m, idx, estacion, deposito)
+print(f"Zonas cluster por capacidad: {NUM_ZONAS_CLUSTER}")
+
 rutas_clarke_wright, zonas_hibridas, mejora_2opt_m = ejecutar_clarke_wright_optimizado(
     nodos_clientes=nodos_clientes,
     dict_demanda=dict_demandas,
@@ -1052,7 +1055,6 @@ rutas_clarke_wright, zonas_hibridas, mejora_2opt_m = ejecutar_clarke_wright_opti
     num_zonas=NUM_ZONAS_CLUSTER,
 )
 
-metricas_base = metricas_rutas(rutas_base_bryan, dist_m, idx, estacion, deposito)
 metricas_hibrido = metricas_rutas(rutas_clarke_wright, dist_m, idx, estacion, deposito)
 df_comparacion_algoritmos = pd.DataFrame([
     {"algoritmo": "Base Bryan - Clarke & Wright distancia", **metricas_base},
@@ -1073,7 +1075,7 @@ df_comparacion_algoritmos.to_csv("comparacion_algoritmos.csv", index=False, enco
 print("\n======================")
 print("COMPARACION CLARKE & WRIGHT")
 print("======================")
-print(f"Zonas iniciales por clustering: {len(zonas_hibridas)}")
+print(f"Zonas iniciales por clustering/capacidad: {len(zonas_hibridas)}")
 print(f"Rutas generadas por Clarke & Wright zonal: {len(rutas_clarke_wright)}")
 print(f"Mejora interna por 2-opt: {mejora_2opt_m/1000:.2f} km")
 display(df_comparacion_algoritmos.round(2))
@@ -1477,13 +1479,10 @@ def construir_camion_desde_viajes(camion_id, viajes):
         (viaje.get("costos", {}) or {})["balance_turno_s"] = 0.0
 
     tiempo_productivo_s = float(sum(v.get("tiempo_productivo_s", 0.0) for v in viajes))
-    tiempo_total_s = max(tiempo_productivo_s, HORAS_TRABAJO_MIN)
+    tiempo_total_s = tiempo_productivo_s
     distancia_total_m = float(sum(v.get("distancia_m", 0.0) for v in viajes))
     if not viajes:
         return None
-    holgura_s = max(0.0, tiempo_total_s - tiempo_productivo_s)
-    if holgura_s > 0:
-        (viajes[-1].get("costos", {}) or {})["balance_turno_s"] = holgura_s
     return {
         "id": int(camion_id),
         "vehiculo_id": int(camion_id),
@@ -1496,6 +1495,7 @@ def construir_camion_desde_viajes(camion_id, viajes):
         "tiempo_total_h": tiempo_total_s / 3600.0,
         "tiempo_productivo_s": tiempo_productivo_s,
         "tiempo_productivo_h": tiempo_productivo_s / 3600.0,
+        "jornada_min_referencia_h": HORAS_TRABAJO_MIN_H,
         "distancia_total_m": distancia_total_m,
         "retorno_final": False,
     }
@@ -3113,9 +3113,6 @@ html = """<!DOCTYPE html>
         }
         if ((v.cierre_km || 0) > 0 || (v.cierre_min || 0) > 0) {
           out.push(`<tr data-camion="${c}">${base}<td>Cierre: regreso al punto de inicio</td><td>${fmt.format(v.cierre_km || 0)}</td><td>${formatMinutes(v.cierre_min || 0)}</td></tr>`);
-        }
-        if ((v.balance_turno_min || 0) > 0) {
-          out.push(`<tr data-camion="${c}">${base}<td>Holgura operativa</td><td>0</td><td>${formatMinutes(v.balance_turno_min || 0)}</td></tr>`);
         }
         return out;
       }).join("");
