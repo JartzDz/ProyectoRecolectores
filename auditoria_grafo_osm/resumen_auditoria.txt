@@ -1,0 +1,24 @@
+AUDITORIA GRAFO OSM
+===================
+
+nodos: 18810
+aristas: 41408
+clientes: 1420
+componentes_debiles: 1
+componentes_fuertes: 36
+nodos_fuera_comp_fuerte_principal: 56
+nodos_sin_entrada: 10
+nodos_sin_salida: 14
+clientes_no_alcanzables_desde_estacion: 1
+clientes_no_llegan_a_relleno: 4
+aristas_sin_geometria_real: 14520
+aristas_sin_nombre: 19819
+aristas_oneway_true: 5880
+id_estacion: 639837109
+id_relleno: 6433377455
+
+Clientes sin ruta desde estacion:
+7097160672
+
+Clientes sin ruta hacia relleno:
+611907623, 611907652, 7097160670, 11520857941

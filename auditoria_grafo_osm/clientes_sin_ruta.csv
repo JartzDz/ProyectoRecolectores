@@ -1,0 +1,6 @@
+id_nodo,tipo_nodo,in_degree,out_degree,street_count,demanda_kg,weak_comp,strong_comp,en_comp_principal,alcanzable_estacion,puede_llegar_relleno,problemas
+611907623,cliente,1,1,1.0,1.0,1,6,False,True,False,fuera_componente_principal_dirigida;cliente_no_llega_a_relleno
+611907652,cliente,2,1,2.0,1.0,1,6,False,True,False,fuera_componente_principal_dirigida;cliente_no_llega_a_relleno
+7097160670,cliente,1,0,1.0,1.0,1,24,False,True,False,fuera_componente_principal_dirigida;sin_salida;cliente_no_llega_a_relleno
+7097160672,cliente,0,1,1.0,1.0,1,29,False,False,True,fuera_componente_principal_dirigida;sin_entrada;cliente_no_alcanzable_desde_estacion
+11520857941,cliente,1,0,1.0,1.0,1,19,False,True,False,fuera_componente_principal_dirigida;sin_salida;cliente_no_llega_a_relleno

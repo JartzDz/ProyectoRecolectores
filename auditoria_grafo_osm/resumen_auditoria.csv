@@ -1,0 +1,2 @@
+nodos,aristas,clientes,componentes_debiles,componentes_fuertes,nodos_fuera_comp_fuerte_principal,nodos_sin_entrada,nodos_sin_salida,clientes_no_alcanzables_desde_estacion,clientes_no_llegan_a_relleno,aristas_sin_geometria_real,aristas_sin_nombre,aristas_oneway_true,id_estacion,id_relleno
+18810,41408,1420,1,36,56,10,14,1,4,14520,19819,5880,639837109,6433377455
