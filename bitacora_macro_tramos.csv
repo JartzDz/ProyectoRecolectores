@@ -1,4 +1,4 @@
-CamiÃ³n,Paso,Tramo,De,A,Nodo_De,Nodo_A,Paradas_en_recolecciÃ³n,Carga_kg,Dist_km,Min,Vehiculo,Operacion
+Camión,Paso,Tramo,De,A,Nodo_De,Nodo_A,Paradas_en_recolección,Carga_kg,Dist_km,Min,Vehiculo,Operacion
 1,V1-1,Aprox,Estacion,Recoleccion,639837109,3336509706,0,0.0,3.665498331914671,4.398597998297605,1,Estacion -> Recoleccion -> Relleno
 1,V1-2,Recol,Recoleccion,Recoleccion,3336509706,3336509706,1,12000.0,0.0,0.5,1,Estacion -> Recoleccion -> Relleno
 1,V1-3,Desc,Recoleccion,Relleno,3336509706,6433377455,0,0.0,16.425043451252606,24.63756517687891,1,Estacion -> Recoleccion -> Relleno
