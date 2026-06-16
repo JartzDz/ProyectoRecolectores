@@ -1,10 +1,11 @@
-﻿# CELDA 1 (DISTANCIA): Carga grafo + obtiene clientes (por etiqueta o fallback polígono) + estación/relleno
+﻿# Carga de red vial, clientes y puntos operativos
 import osmnx as ox
 import networkx as nx
 import numpy as np
 import geopandas as gpd
 import shapely.geometry as geom
 import sys
+import argparse
 from shapely.validation import explain_validity
 from pyproj import CRS
 from pathlib import Path
@@ -48,6 +49,204 @@ PESOS_BASURA_POR_TIPO_NODO = {
     "otros": 1.0,
 }
 
+PARAMETROS_FALLBACK = {
+    "toneladas": TOTAL_PESO_PESADO_TON,
+    "capacidad_camion_kg": CAPACIDAD_MAXIMA_CAMION_KG,
+    "camiones": NUM_VEHICULOS_MAX,
+    "horas_trabajo": HORAS_TRABAJO_H,
+    "vel_acercamiento": VELOCIDAD_ACERCAMIENTO_KMH,
+    "vel_recoleccion": VELOCIDAD_RECOLECCION_KMH,
+    "vel_transporte": VELOCIDAD_TRANSPORTE_KMH,
+    "vel_retorno": VELOCIDAD_RETORNO_KMH,
+    "recolectores": NUMERO_RECOLECTORES_CAMION,
+    "choferes": NUMERO_CHOFER_CAMION,
+    "sueldo_recolector_usd": SUELDO_RECOLECTORES_USD,
+    "sueldo_chofer_usd": SUELDO_CHOFER_USD,
+    "horas_nomina_mensual": HORAS_NOMINA_MENSUAL,
+    "tiempo_parada_seg": TIEMPO_PARADA_SEG,
+    "precio_diesel_usd_gal": PRECIO_DIESEL_USD_GAL,
+    "rendimiento_km_gal": RENDIMIENTO_KM_GAL,
+    "incluir_calles": True,
+}
+
+def _parse_bool(value):
+    """Convierte texto de consola a booleano sin depender de librerias externas."""
+    if isinstance(value, bool):
+        return value
+    value = str(value).strip().lower()
+    if value in ("1", "true", "t", "si", "s", "yes", "y"):
+        return True
+    if value in ("0", "false", "f", "no", "n"):
+        return False
+    raise argparse.ArgumentTypeError("Usa si/no, true/false o 1/0.")
+
+
+def cargar_parametros_usuario():
+    """
+    Parametros editables antes de ejecutar el algoritmo.
+    Si el usuario no envia ningun parametro, se usan los valores originales
+    definidos en PARAMETROS_FALLBACK.
+
+    Ejemplo:
+      python main.py --toneladas 120 --capacidad-camion-kg 12000 --camiones 10
+    """
+    parser = argparse.ArgumentParser(
+        description="Optimiza rutas de recoleccion y genera un HTML animado.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument("--toneladas", type=float, default=PARAMETROS_FALLBACK["toneladas"], help="Basura total del escenario en toneladas.")
+    parser.add_argument("--escenario", choices=["60t", "120t"], default=None, help="Atajo para ejecutar escenarios predefinidos de 60 o 120 toneladas.")
+    parser.add_argument("--capacidad-camion-kg", type=float, default=PARAMETROS_FALLBACK["capacidad_camion_kg"], help="Capacidad maxima por viaje.")
+    parser.add_argument("--camiones", type=int, default=PARAMETROS_FALLBACK["camiones"], help="Cantidad maxima de camiones disponibles.")
+    parser.add_argument("--horas-trabajo", type=float, default=PARAMETROS_FALLBACK["horas_trabajo"], help="Horas maximas de trabajo por camion.")
+    parser.add_argument("--vel-acercamiento", type=float, default=PARAMETROS_FALLBACK["vel_acercamiento"], help="Velocidad estacion/relleno hacia primer cliente.")
+    parser.add_argument("--vel-recoleccion", type=float, default=PARAMETROS_FALLBACK["vel_recoleccion"], help="Velocidad durante recoleccion.")
+    parser.add_argument("--vel-transporte", type=float, default=PARAMETROS_FALLBACK["vel_transporte"], help="Velocidad desde ultimo cliente al relleno.")
+    parser.add_argument("--vel-retorno", type=float, default=PARAMETROS_FALLBACK["vel_retorno"], help="Velocidad de retorno relleno-estacion.")
+    parser.add_argument("--recolectores", type=int, default=PARAMETROS_FALLBACK["recolectores"], help="Numero de recolectores por camion.")
+    parser.add_argument("--choferes", type=int, default=PARAMETROS_FALLBACK["choferes"], help="Numero de choferes por camion.")
+    parser.add_argument("--sueldo-recolector", type=float, default=PARAMETROS_FALLBACK["sueldo_recolector_usd"], help="Sueldo mensual por recolector en USD.")
+    parser.add_argument("--sueldo-chofer", type=float, default=PARAMETROS_FALLBACK["sueldo_chofer_usd"], help="Sueldo mensual por chofer en USD.")
+    parser.add_argument("--horas-nomina", type=float, default=PARAMETROS_FALLBACK["horas_nomina_mensual"], help="Horas mensuales usadas para estimar costo laboral.")
+    parser.add_argument("--tiempo-parada-seg", type=float, default=PARAMETROS_FALLBACK["tiempo_parada_seg"], help="Tiempo de servicio por parada en segundos.")
+    parser.add_argument("--precio-diesel", type=float, default=PARAMETROS_FALLBACK["precio_diesel_usd_gal"], help="Precio del diesel por galon en USD.")
+    parser.add_argument("--rendimiento-km-gal", type=float, default=PARAMETROS_FALLBACK["rendimiento_km_gal"], help="Rendimiento estimado del camion en km/gal.")
+    parser.add_argument("--salida-html", default=None, help="Nombre del HTML de salida. Si se omite, se arma con las toneladas.")
+    parser.add_argument("--incluir-calles", type=_parse_bool, default=PARAMETROS_FALLBACK["incluir_calles"], help="Mostrar red vial base en el HTML.")
+    parser.add_argument("--configurar-parametros", action="store_true", help="Abre el asistente interactivo para ajustar parametros operativos.")
+    argv = sys.argv[1:]
+    toneladas_por_cli = any(arg == "--toneladas" or arg.startswith("--toneladas=") for arg in argv)
+
+    args, unknown = parser.parse_known_args()
+    if args.escenario:
+        args.toneladas = float(args.escenario.replace("t", ""))
+    elif not toneladas_por_cli and sys.stdin.isatty():
+        args.toneladas = seleccionar_escenario_interactivo(PARAMETROS_FALLBACK["toneladas"])
+    if sys.stdin.isatty() and (len(argv) == 0 or args.configurar_parametros):
+        ajustar_parametros_interactivos(args)
+    if unknown:
+        print("Parametros ignorados por compatibilidad:", " ".join(unknown))
+    return args
+
+
+def seleccionar_escenario_interactivo(default_ton):
+    """Solicita el escenario solo cuando la ejecucion es interactiva."""
+    print("\nSeleccione el escenario de basura a procesar:")
+    print("  1) 60 toneladas")
+    print("  2) 120 toneladas")
+    print("  3) Otro valor")
+    print(f"  Enter) Usar valor por defecto: {default_ton:.0f} toneladas")
+
+    try:
+        opcion = input("Escenario [1/2/3]: ").strip()
+    except EOFError:
+        return float(default_ton)
+
+    if opcion == "":
+        return float(default_ton)
+    if opcion == "1":
+        return 60.0
+    if opcion == "2":
+        return 120.0
+    if opcion == "3":
+        try:
+            valor = input("Ingrese toneladas: ").strip().replace(",", ".")
+            toneladas = float(valor)
+            if toneladas <= 0:
+                raise ValueError
+            return toneladas
+        except (EOFError, ValueError):
+            print(f"Valor no valido. Se usara el valor por defecto: {default_ton:.0f} toneladas.")
+            return float(default_ton)
+
+    print(f"Opcion no valida. Se usara el valor por defecto: {default_ton:.0f} toneladas.")
+    return float(default_ton)
+
+
+def _leer_float_interactivo(etiqueta, valor_actual, minimo=None):
+    try:
+        texto = input(f"{etiqueta} [{valor_actual}]: ").strip().replace(",", ".")
+    except EOFError:
+        return float(valor_actual)
+    if texto == "":
+        return float(valor_actual)
+    try:
+        valor = float(texto)
+        if minimo is not None and valor < minimo:
+            raise ValueError
+        return valor
+    except ValueError:
+        print(f"Valor no valido. Se mantiene {valor_actual}.")
+        return float(valor_actual)
+
+
+def _leer_int_interactivo(etiqueta, valor_actual, minimo=None):
+    valor = _leer_float_interactivo(etiqueta, valor_actual, minimo=minimo)
+    return int(round(valor))
+
+
+def ajustar_parametros_interactivos(args):
+    """Permite modificar solo los parametros que suelen cambiar entre escenarios."""
+    try:
+        respuesta = input("\nDesea ajustar parametros operativos y de costos? [s/N]: ").strip().lower()
+    except EOFError:
+        return
+    if respuesta not in ("s", "si", "y", "yes"):
+        return
+
+    print("\nParametros operativos principales. Presione Enter para conservar el valor actual.")
+    args.capacidad_camion_kg = _leer_float_interactivo("Capacidad maxima por camion (kg)", args.capacidad_camion_kg, minimo=1)
+    args.camiones = _leer_int_interactivo("Camiones maximos disponibles", args.camiones, minimo=1)
+    args.horas_trabajo = _leer_float_interactivo("Jornada maxima por camion (h)", args.horas_trabajo, minimo=0.1)
+    args.tiempo_parada_seg = _leer_float_interactivo("Tiempo por parada (s)", args.tiempo_parada_seg, minimo=0)
+
+    print("\nPersonal y costos.")
+    args.recolectores = _leer_int_interactivo("Recolectores por camion", args.recolectores, minimo=0)
+    args.choferes = _leer_int_interactivo("Choferes por camion", args.choferes, minimo=1)
+    args.sueldo_recolector = _leer_float_interactivo("Sueldo mensual por recolector (USD)", args.sueldo_recolector, minimo=0)
+    args.sueldo_chofer = _leer_float_interactivo("Sueldo mensual por chofer (USD)", args.sueldo_chofer, minimo=0)
+    args.horas_nomina = _leer_float_interactivo("Horas de nomina mensual", args.horas_nomina, minimo=0.1)
+    args.precio_diesel = _leer_float_interactivo("Precio diesel (USD/gal)", args.precio_diesel, minimo=0)
+    args.rendimiento_km_gal = _leer_float_interactivo("Rendimiento camion (km/gal)", args.rendimiento_km_gal, minimo=0.1)
+
+    print("\nVelocidades de operacion.")
+    args.vel_acercamiento = _leer_float_interactivo("Velocidad de acercamiento (km/h)", args.vel_acercamiento, minimo=0.1)
+    args.vel_recoleccion = _leer_float_interactivo("Velocidad de recoleccion (km/h)", args.vel_recoleccion, minimo=0.1)
+    args.vel_transporte = _leer_float_interactivo("Velocidad de transporte al relleno (km/h)", args.vel_transporte, minimo=0.1)
+    args.vel_retorno = _leer_float_interactivo("Velocidad de retorno (km/h)", args.vel_retorno, minimo=0.1)
+
+
+ARGS = cargar_parametros_usuario()
+CAPACIDAD_MAXIMA_CAMION_KG = float(ARGS.capacidad_camion_kg)
+NUM_VEHICULOS_MAX = int(ARGS.camiones)
+HORAS_TRABAJO_H = float(ARGS.horas_trabajo)
+NUMERO_RECOLECTORES_CAMION = int(ARGS.recolectores)
+NUMERO_CHOFER_CAMION = int(ARGS.choferes)
+SUELDO_RECOLECTORES_USD = float(ARGS.sueldo_recolector)
+SUELDO_CHOFER_USD = float(ARGS.sueldo_chofer)
+HORAS_NOMINA_MENSUAL = float(ARGS.horas_nomina)
+TIEMPO_PARADA_SEG = float(ARGS.tiempo_parada_seg)
+PRECIO_DIESEL_USD_GAL = float(ARGS.precio_diesel)
+RENDIMIENTO_KM_GAL = float(ARGS.rendimiento_km_gal)
+TOTAL_PESO_PESADO_TON = float(ARGS.toneladas)
+TOTAL_PESO_LIGERO_TON = 0.0
+TOTAL_BASURA_KG = (TOTAL_PESO_PESADO_TON + TOTAL_PESO_LIGERO_TON) * 1000.0
+ESCENARIO_COMPACTADO_TON = float(ARGS.toneladas)
+ESCENARIO_COMPACTADO_KG = ESCENARIO_COMPACTADO_TON * 1000.0
+VELOCIDAD_ACERCAMIENTO_KMH = float(ARGS.vel_acercamiento)
+VELOCIDAD_RECOLECCION_KMH = float(ARGS.vel_recoleccion)
+VELOCIDAD_TRANSPORTE_KMH = float(ARGS.vel_transporte)
+VELOCIDAD_RETORNO_KMH = float(ARGS.vel_retorno)
+
+print("\nPARAMETROS DE EJECUCION")
+print(f"  Toneladas: {TOTAL_PESO_PESADO_TON:.1f} t")
+print(f"  Capacidad camion: {CAPACIDAD_MAXIMA_CAMION_KG:.0f} kg")
+print(f"  Camiones maximos: {NUM_VEHICULOS_MAX}")
+print(f"  Jornada maxima: {HORAS_TRABAJO_H:.1f} h")
+print(f"  Personal por camion: {NUMERO_RECOLECTORES_CAMION} recolectores, {NUMERO_CHOFER_CAMION} chofer(es)")
+print(f"  Tiempo por parada: {TIEMPO_PARADA_SEG:.0f} s")
+print(f"  Diesel: ${PRECIO_DIESEL_USD_GAL:.2f}/gal | Rendimiento: {RENDIMIENTO_KM_GAL:.2f} km/gal")
+
 try:
     from IPython.display import display
 except ImportError:
@@ -72,7 +271,7 @@ print("   -> OK grafo cargado.")
 # 0) Validar que exista 'length' (distancia en metros)
 u0, v0, d0 = next(iter(G.edges(data=True)))
 if "length" not in d0:
-    raise ValueError("❌ El grafo no tiene atributo 'length' en aristas. No se puede trabajar por distancia.")
+    raise ValueError("El grafo no tiene atributo 'length' en aristas. No se puede trabajar por distancia.")
 
 # 1) Coordenadas clave
 loc_estacion = (-2.8758464, -78.9814250)  # (lat, lon)
@@ -91,7 +290,7 @@ for _, data in G.nodes(data=True):
         break
 
 if tiene_tipo:
-    print("2) Detecté 'tipo_nodo' en el grafo. Leyendo clientes etiquetados...")
+    print("2) Se detecto 'tipo_nodo' en el grafo. Leyendo clientes etiquetados...")
     for nodo, data in G.nodes(data=True):
         tipo = data.get("tipo_nodo", "")
         if tipo == "cliente":
@@ -115,7 +314,7 @@ if id_relleno is None:
 
 # 4) Fallback: si no hay clientes etiquetados, usar polígono + buffer (para acercarte a 307)
 if len(nodos_clientes) == 0:
-    print("⚠️ No hay clientes etiquetados. Uso fallback: polígono detallado + buffer para aproximar 307.")
+    print("Aviso: no hay clientes etiquetados. Se usa poligono detallado y buffer para aproximar 307 clientes.")
 
     puntos_zona_google = [
         (-2.887645, -79.009025), (-2.887736, -79.007586), (-2.887923, -79.006348),
@@ -178,18 +377,18 @@ if len(nodos_clientes) == 0:
 
     print(f"   -> Buffer elegido: {buffer_opt} m | clientes: {count_opt}")
 
-print("\n✅ DATOS LISTOS:")
+print("\nDATOS LISTOS:")
 print(f"   -> Clientes a visitar: {len(nodos_clientes)}")
 print(f"   -> Nodo Estación: {id_estacion}")
 print(f"   -> Nodo Relleno:  {id_relleno}")
 
-# Si no tienes demandas aquí, lo normal es calcularlas en la CELDA 2 (POIs o distribución base)
+# Si no hay demandas en el grafo, se calculan con POIs o distribucion base.
 if len(dict_demandas) > 0:
     print(f"   -> Demanda Total (si aplica): {sum(dict_demandas.values()):.2f} kg")
 else:
-    print("   -> Demanda: se definirá en CELDA 2 (recomendado).")
+    print("   -> Demanda: se definira en la etapa de POIs y distribucion base.")
 
-# CELDA 2 (ROBUSTA): POIs + demandas (sirve con o sin poligono_zona)
+# Calculo de POIs y demandas
 import pandas as pd
 import numpy as np
 import shapely.geometry as geom
@@ -212,7 +411,7 @@ if "poligono_zona" in globals() and poligono_zona is not None:
 else:
     print("   -> No existe poligono_zona. Creando polígono desde nodos_clientes (convex hull)...")
     pts = [(G.nodes[n]['x'], G.nodes[n]['y']) for n in nodos_clientes]
-    poly_query = geom.MultiPoint(pts).convex_hull.buffer(0.0005)  # ~50m aprox (ojo: aprox)
+    poly_query = geom.MultiPoint(pts).convex_hull.buffer(0.0005)  # Buffer aproximado de 50 m
 
 # ---------------------------------------------------------
 # B) Descargar POIs
@@ -336,7 +535,7 @@ elif diferencia < 0:
         exceso = round(exceso - quitar, 2)
 
     if exceso > 0:
-        print(f"⚠️ Aviso: no se pudo ajustar todo el exceso ({exceso} kg).")
+        print(f"Aviso: no se pudo ajustar todo el exceso ({exceso} kg).")
 
 # (Opcional) micro-ajuste final por redondeos (ya debería ser 0.00 casi siempre)
 residual = round(TOTAL_BASURA_KG - sum(dict_demandas.values()), 2)
@@ -422,7 +621,7 @@ print(f"Escenario compactado objetivo: {ESCENARIO_COMPACTADO_KG:.2f} kg")
 print(f"Factor escala escenario: {factor_escenario_compactado:.4f}")
 print(f"Demanda compactada total: {sum(dict_demandas.values()):.2f} kg")
 
-# CELDA 3 (COINCIDE CON CELDA 6): Matriz OD DISTANCIAS (m) + helpers de TIEMPO por tramo
+# Matriz origen-destino de distancias y tiempos por tramo
 import numpy as np
 import networkx as nx
 
@@ -434,7 +633,7 @@ V_RECOLECCION        = VELOCIDAD_RECOLECCION_KMH
 V_ULTIMO_A_DEPOSITO  = VELOCIDAD_TRANSPORTE_KMH
 V_DEPOSITO_A_EST     = VELOCIDAD_RETORNO_KMH
 
-# (Debe coincidir con CELDA 6)
+# Debe mantenerse consistente con la asignacion operativa.
 TIEMPO_RECOLECCION_POR_NODO = TIEMPO_PARADA_SEG  # segundos
 
 def vel_mps(vel_kmh: float) -> float:
@@ -474,10 +673,10 @@ for k, origen in enumerate(lista_lugares, 1):
     if k % 50 == 0:
         print(f"  procesados {k}/{n} orígenes...")
 
-print("✅ Matriz de distancias lista.")
+print("Matriz de distancias lista.")
 
 # -----------------------------
-# 3) Helpers D() y T() (esto es lo que usa CELDA 6)
+# Funciones auxiliares de distancia y tiempo
 # -----------------------------
 def D(a, b):
     """Distancia mínima (m) entre nodos a y b."""
@@ -488,16 +687,16 @@ def T(a, b, vel_kmh):
     return tiempo_segundos(D(a, b), vel_kmh)
 
 # -----------------------------
-# 4) Funciones de tiempo por viaje (COINCIDE con la lógica de CELDA 6)
+# Funciones de tiempo por viaje
 # -----------------------------
 def tiempo_viaje_s(ruta_clientes, origen_es_estacion=True,
                    incluir_recoleccion=True,
                    estacion=estacion, deposito=deposito):
     """
-    Tiempo de un viaje (SIN retorno final a estación), exactamente como CELDA 6:
+    Tiempo de un viaje, sin retorno final a estacion.
     - Aproximación (origen->primer cliente) a 40 km/h
     - Entre clientes a 10 km/h
-    - Recolección por nodo (opcional): 60s por parada (igual que CELDA 6)
+    - Recoleccion por nodo: 60 s por parada cuando corresponde.
     - Último cliente -> depósito a 30 km/h
     """
     if not ruta_clientes:
@@ -515,7 +714,7 @@ def tiempo_viaje_s(ruta_clientes, origen_es_estacion=True,
     # 2) Interno (10) + recolección
     t_interno = 0.0
     if incluir_recoleccion:
-        # En CELDA 6: suma 1 vez por cada nodo visitado
+        # Suma una parada por cada nodo visitado.
         t_interno += TIEMPO_RECOLECCION_POR_NODO  # primer nodo
 
     for a, b in zip(ruta_clientes[:-1], ruta_clientes[1:]):
@@ -557,10 +756,10 @@ print(f"  Descarga (30):  {det['descarga_s']/60:.2f}")
 t_fin = tiempo_fin_turno_s()
 print(f"\nRetorno final (Depósito->Estación, 40): {t_fin/60:.2f} min")
 
-# CELDA 4: Clarke & Wright usando DISTANCIAS por calles (metros) + tiempos compatibles con CELDA 6
+# Optimizacion Clarke & Wright con distancias viales
 import numpy as np
 
-# (Debe coincidir con CELDA 3 / CELDA 6)
+# Debe mantenerse consistente con la matriz OD y la asignacion operativa.
 V_ESTACION_A_PRIMERO = VELOCIDAD_ACERCAMIENTO_KMH
 V_RECOLECCION        = VELOCIDAD_RECOLECCION_KMH
 V_ULTIMO_A_DEPOSITO  = VELOCIDAD_TRANSPORTE_KMH
@@ -647,13 +846,13 @@ def ejecutar_clarke_wright_dist(nodos_clientes, dict_demanda, dist_matriz, idx, 
     return list(rutas.values())
 
 # =========================================================
-# 3) TIEMPOS (COMPATIBLES CON CELDA 6)
+# Calculo de tiempos operativos
 # =========================================================
 def tiempo_viaje_desde_dist_s(ruta_clientes, dist_matriz, idx, estacion_id, deposito_id,
                              origen_es_estacion=True,
                              incluir_recoleccion=True):
     """
-    Tiempo de UN VIAJE (sin retorno final a estación), igual que CELDA 6:
+    Tiempo de un viaje, sin retorno final a estacion.
       - Origen (estación si primer viaje, depósito si no) -> primer cliente: 40
       - Entre clientes: 10 + 60s por parada (opcional)
       - Último cliente -> depósito: 30
@@ -685,12 +884,12 @@ def tiempo_fin_turno_s(dist_matriz, idx, deposito_id, estacion_id):
     """Retorno final depósito -> estación (40)."""
     return tiempo_segundos(D(dist_matriz, idx, deposito_id, estacion_id), V_DEPOSITO_A_EST)
 
-print("Funciones C&W (distancia) compiladas y tiempos alineados con CELDA 6 ✅")
+print("Funciones Clarke & Wright por distancia listas y alineadas con la asignacion operativa.")
 
-# CELDA 4: Clarke & Wright usando DISTANCIAS por calles (metros) + tiempos compatibles con CELDA 6
+# Optimizacion Clarke & Wright con distancias viales
 import numpy as np
 
-# (Debe coincidir con CELDA 3 / CELDA 6)
+# Debe mantenerse consistente con la matriz OD y la asignacion operativa.
 V_ESTACION_A_PRIMERO = VELOCIDAD_ACERCAMIENTO_KMH
 V_RECOLECCION        = VELOCIDAD_RECOLECCION_KMH
 V_ULTIMO_A_DEPOSITO  = VELOCIDAD_TRANSPORTE_KMH
@@ -777,13 +976,13 @@ def ejecutar_clarke_wright_dist(nodos_clientes, dict_demanda, dist_matriz, idx, 
     return list(rutas.values())
 
 # =========================================================
-# 3) TIEMPOS (COMPATIBLES CON CELDA 6)
+# Calculo de tiempos operativos
 # =========================================================
 def tiempo_viaje_desde_dist_s(ruta_clientes, dist_matriz, idx, estacion_id, deposito_id,
                              origen_es_estacion=True,
                              incluir_recoleccion=True):
     """
-    Tiempo de UN VIAJE (sin retorno final a estación), igual que CELDA 6:
+    Tiempo de un viaje, sin retorno final a estacion.
       - Origen (estación si primer viaje, depósito si no) -> primer cliente: 40
       - Entre clientes: 10 + 60s por parada (opcional)
       - Último cliente -> depósito: 30
@@ -815,7 +1014,7 @@ def tiempo_fin_turno_s(dist_matriz, idx, deposito_id, estacion_id):
     """Retorno final depósito -> estación (40)."""
     return tiempo_segundos(D(dist_matriz, idx, deposito_id, estacion_id), V_DEPOSITO_A_EST)
 
-print("Funciones C&W (distancia) compiladas y tiempos alineados con CELDA 6 ✅")
+print("Funciones Clarke & Wright por distancia listas y alineadas con la asignacion operativa.")
 
 # ---------------------------------------------------------
 # 4) Materializar lista_viajes para ejecución local
@@ -1493,7 +1692,7 @@ print(f"Viajes Clarke & Wright generados: {len(lista_viajes)}")
 print(f"Viajes válidos para asignación: {sum(1 for v in lista_viajes if v.get('valido'))}")
 
 
-# CELDA 6: Asignacion generica de rutas/camiones, sin horarios por turno
+# Asignacion de viajes a camiones
 import numpy as np
 
 HORAS_TRABAJO = HORAS_TRABAJO_H * 3600  # segundos
@@ -1525,7 +1724,7 @@ t_retorno_casa = T(id_relleno, id_estacion, V_DEPOSITO_A_EST)
 print(f"Tiempo de seguridad (Relleno -> Estación): {t_retorno_casa/60:.2f} min")
 
 if not np.isfinite(t_retorno_casa):
-    print("⚠️ No hay camino Relleno -> Estación en la matriz de distancias.")
+    print("Aviso: no hay camino Relleno -> Estacion en la matriz de distancias.")
     print("   Solución típica: recalcular dist_m con un grafo no dirigido (nx.Graph(G)).")
 
 # ---------------------------------------------------------
@@ -1699,7 +1898,7 @@ if vehiculos_fisicos > NUM_VEHICULOS:
     raise ValueError(f"Se requieren {vehiculos_fisicos} camiones y el maximo disponible es {NUM_VEHICULOS}.")
 print(f"\nRESUMEN FINAL: {sum(len(c.get('viajes', [])) for c in camiones)} viajes, {vehiculos_fisicos} camiones usados de {NUM_VEHICULOS} disponibles.")
 
-# CELDA 7 (COMPLETA): Densidad poblacional real (hab/km²) por nodo usando raster de densidad + fallback vecindario
+# Calculo de densidad poblacional por nodo
 import geopandas as gpd
 import pandas as pd
 import numpy as np
@@ -1820,7 +2019,7 @@ gdf_pts["pob_buffer"] = np.array(poblaciones, dtype=float)
 n_total = len(gdf_pts)
 n_nan = int(np.isnan(gdf_pts["densidad_pob_km2"]).sum())
 
-print("\n✅ Resultado CELDA 7")
+print("\nResultado de densidad poblacional")
 print("Filas en gdf_pts:", n_total)
 print("Nodos sin densidad:", n_nan)
 
@@ -1835,7 +2034,7 @@ if n_nan > 0:
     print("\nEjemplos de nodos NaN (primeros 10):")
     print(gdf_pts[gdf_pts["densidad_pob_km2"].isna()][["id_nodo","demanda_kg"]].head(10).to_string(index=False))
 
-# CELDA 8 (V2.1.2): Exportación QGIS (Base + Tramos con De/A) -> varios archivos + densidad poblacional real en clientes
+# Exportacion de capas geograficas para QGIS
 import geopandas as gpd
 from shapely.geometry import Point, LineString
 import numpy as np
@@ -2028,17 +2227,17 @@ x_est, y_est = G.nodes[id_estacion]['x'], G.nodes[id_estacion]['y']
 x_rel, y_rel = G.nodes[id_relleno]['x'], G.nodes[id_relleno]['y']
 
 # =========================================================
-# 0) Validar densidad poblacional calculada (CELDA 7)
+# Validar densidad poblacional calculada
 # =========================================================
 if "gdf_pts" in globals() and gdf_pts is not None and len(gdf_pts) > 0:
     # nos quedamos solo con lo que necesitamos
     gdf_dens = gdf_pts[["id_nodo", "densidad_pob_km2", "pob_buffer"]].copy()
     # por si acaso viene como float
     gdf_dens["id_nodo"] = gdf_dens["id_nodo"].astype(int)
-    print("✅ Densidad poblacional detectada desde CELDA 7 (gdf_pts).")
+    print("Densidad poblacional detectada en gdf_pts.")
 else:
     gdf_dens = None
-    print("⚠️ No encuentro gdf_pts de CELDA 7. Se exportarán clientes SIN densidad poblacional real.")
+    print("Aviso: no se encontro gdf_pts. Se exportaran clientes sin densidad poblacional real.")
 
 # =========================================================
 # 1) CAPAS BASE (archivos separados)
@@ -2147,7 +2346,7 @@ for camion in camiones:
         primer = nodos_ruta[0]
         ultimo = nodos_ruta[-1]
 
-        # Origen del viaje según CELDA 6
+        # Origen operativo del viaje
         if viaje["origen"] == "Estación":
             origen_nodo = id_estacion
             de_aprox = "Estación"
@@ -2250,17 +2449,17 @@ for camion in camiones:
     if features:
         gdf_tramos = gpd.GeoDataFrame(features, crs="EPSG:4326")
         gdf_tramos.to_file(out_gpkg, layer="tramos", driver="GPKG")
-        print(f"  ✅ Camión {c_id}: Guardado {out_gpkg} (layer='tramos', {len(gdf_tramos)} tramos)")
+        print(f"  Camion {c_id}: Guardado {out_gpkg} (layer='tramos', {len(gdf_tramos)} tramos)")
     else:
-        print(f"  ⚠️ Camión {c_id}: No se generaron tramos (features vacío). Revisa viajes.")
+        print(f"  Aviso Camion {c_id}: No se generaron tramos (features vacío). Revisa viajes.")
 
-print("\n✅ ¡PROCESO TERMINADO! Archivos generados:")
+print("\nPROCESO TERMINADO. Archivos generados:")
 print("  - base_calles.gpkg")
 print("  - base_clientes.gpkg  (incluye demanda_kg + densidad_pob_km2 + pob_buffer + dist_a_* )")
 print("  - base_puntos_clave.gpkg")
 print("  - rutas_tramos_Camion_X.gpkg (uno por camión)")
 
-# CELDA 9 (V3.2): Bitácora MACRO por TRAMOS + CSV (con distancias en todos los tramos)
+# Bitacora macro por tramos y exportacion CSV
 import pandas as pd
 import numpy as np
 import networkx as nx
@@ -2270,7 +2469,7 @@ print("Generando bitácora MACRO por TRAMOS (Estación/Recolección/Relleno/Fin)
 filas = []
 
 # -------------------------------
-# Helpers MultiDiGraph safe (idénticos a CELDA 8)
+# Funciones auxiliares para MultiDiGraph
 # -------------------------------
 def best_edge_attr(G, u, v, attr, default=0.0):
     data = G.get_edge_data(u, v)
@@ -2419,7 +2618,7 @@ for camion in camiones:
             "Nodo_De": int(primer),
             "Nodo_A": int(ultimo),
             "Paradas_en_recolección": int(len(nodos)),
-            "Carga_kg": float(viaje["carga"]),   # ✅ la carga se reporta SOLO aquí
+            "Carga_kg": float(viaje["carga"]),   # La carga se reporta solo en el tramo de recoleccion.
             "Dist_km": d_recol_km,
             "Min": t_int_s / 60.0
         })
@@ -2437,7 +2636,7 @@ for camion in camiones:
             "Nodo_De": int(ultimo),
             "Nodo_A": int(id_relleno),
             "Paradas_en_recolección": 0,
-            "Carga_kg": 0.0,                   # ✅ NO repetir carga (evita duplicar en resumen)
+            "Carga_kg": 0.0,                   # Evita duplicar la carga en el resumen.
             "Dist_km": d_desc_km,
             "Min": t_desc_s / 60.0
         })
@@ -2465,7 +2664,7 @@ for camion in camiones:
 df = pd.DataFrame(filas)
 
 # -------------------------------
-# Vista bonita (consola)
+# Vista previa de bitacora en consola
 # -------------------------------
 df_print = df.copy()
 df_print["Dist_km"] = df_print["Dist_km"].round(2)
@@ -2484,7 +2683,7 @@ print(df_print.head(30).to_string(index=False))
 
 # CSV completo
 df.to_csv("bitacora_macro_tramos.csv", index=False)
-print("\n✅ Guardado completo: 'bitacora_macro_tramos.csv'")
+print("\nArchivo guardado: 'bitacora_macro_tramos.csv'")
 
 # -------------------------------
 # Resumen por camión (macro)
@@ -2566,7 +2765,7 @@ df_comparacion_operativa.to_csv("comparacion_operativa.csv", index=False, encodi
 print("\n=== COMPARACION OPERATIVA VS BASE BRYAN ===")
 display(df_comparacion_operativa.round(2))
 
-# CELDA 9 (FIX): HTML Leaflet animado (capas + camiones 🚚 + velocidad) SIN f-string
+# Visualizacion HTML interactiva con Leaflet
 import geopandas as gpd
 import json
 import os
@@ -2577,13 +2776,19 @@ import os
 CLIENTES_GPKG = "base_clientes.gpkg"
 PUNTOS_CLAVE_GPKG = "base_puntos_clave.gpkg"
 CALLES_GPKG = "base_calles.gpkg"      # opcional (puede ser pesado)
-INCLUIR_CALLES = True                # Muestra la red vial base en el HTML
+INCLUIR_CALLES = bool(getattr(ARGS, "incluir_calles", True))  # Muestra la red vial base en el HTML
 
 CAMIONES = [int(c["id"]) for c in camiones] if "camiones" in globals() and camiones else [1, 2, 3]
 RUTA_GPKG_FMT = "rutas_tramos_Camion_{}.gpkg"
 LAYER_TRAMOS = "tramos"
 
-OUT_HTML = "rutas_animadas_120t.html"
+def etiqueta_toneladas(valor_ton):
+    valor = float(valor_ton)
+    if abs(valor - round(valor)) < 1e-9:
+        return str(int(round(valor)))
+    return str(valor).replace(".", "p")
+
+OUT_HTML = getattr(ARGS, "salida_html", None) or f"mapa_rutas_recoleccion_{etiqueta_toneladas(ESCENARIO_COMPACTADO_TON)}t.html"
 
 
 # -----------------------------
@@ -2604,7 +2809,7 @@ def leer_capa_gpkg(path, layer=None):
     try:
         return gpd.read_file(path, layer=layer) if layer else gpd.read_file(path)
     except Exception as e:
-        print(f"⚠️ No pude leer {path} ({e})")
+        print(f"Aviso: no se pudo leer {path} ({e})")
         return None
 
 
@@ -2705,13 +2910,34 @@ sectores_geojson = {"type": "FeatureCollection", "features": sectores_features}
 # 2) Leer rutas por camión y convertir a lista de [lat, lon]
 # -----------------------------
 rutas_camiones = {}
+rutas_viajes = {}
+
+def geometry_to_latlon(geom_obj):
+    """Convierte LineString/MultiLineString a coordenadas [lat, lon] para Leaflet."""
+    if geom_obj is None:
+        return []
+    if geom_obj.geom_type == "LineString":
+        pts = list(geom_obj.coords)
+    elif geom_obj.geom_type == "MultiLineString":
+        pts = []
+        for ls in geom_obj.geoms:
+            pts += list(ls.coords)
+    else:
+        return []
+    return [[float(y), float(x)] for (x, y) in pts]
+
+def append_coords(destino, latlon):
+    if destino and latlon and destino[-1] == latlon[0]:
+        destino.extend(latlon[1:])
+    else:
+        destino.extend(latlon)
 
 for c in CAMIONES:
     path = RUTA_GPKG_FMT.format(c)
     gdf_tramos = leer_capa_gpkg(path, layer=LAYER_TRAMOS)
 
     if gdf_tramos is None or len(gdf_tramos) == 0:
-        print(f"⚠️ Camión {c}: sin tramos")
+        print(f"Aviso Camion {c}: sin tramos")
         rutas_camiones[c] = []
         continue
 
@@ -2720,27 +2946,22 @@ for c in CAMIONES:
         gdf_tramos = gdf_tramos.sort_values("orden")
 
     coords = []
-    for geom in gdf_tramos.geometry:
-        if geom is None:
-            continue
+    for _, row in gdf_tramos.iterrows():
+        latlon = geometry_to_latlon(row.geometry)
+        append_coords(coords, latlon)
 
-        if geom.geom_type == "LineString":
-            pts = list(geom.coords)
-        elif geom.geom_type == "MultiLineString":
-            pts = []
-            for ls in geom.geoms:
-                pts += list(ls.coords)
-        else:
-            continue
-
-        latlon = [[float(y), float(x)] for (x, y) in pts]
-        if coords and latlon and coords[-1] == latlon[0]:
-            coords += latlon[1:]
-        else:
-            coords += latlon
+        viaje_id = int(row["Viaje"]) if "Viaje" in gdf_tramos.columns and pd.notna(row.get("Viaje")) else 1
+        key_viaje = f"{c}-{viaje_id}"
+        if key_viaje not in rutas_viajes:
+            rutas_viajes[key_viaje] = {
+                "camion": int(c),
+                "viaje": int(viaje_id),
+                "coords": [],
+            }
+        append_coords(rutas_viajes[key_viaje]["coords"], latlon)
 
     rutas_camiones[c] = coords
-    print(f"✅ Camión {c}: {len(coords)} puntos de ruta")
+    print(f"Camion {c}: {len(coords)} puntos de ruta")
 
 
 # -----------------------------
@@ -2896,6 +3117,7 @@ html = """<!DOCTYPE html>
     .btn { cursor: pointer; border: 1px solid #172033; padding: 9px 11px; border-radius: 6px; background: #172033; color: white; font-weight: 800; font-size: 13px; line-height: 1; }
     .btn.secondary { background: #fff; color: #172033; border-color: #cbd5e1; }
     .btn.accent { background: var(--accent); border-color: var(--accent); }
+    .btn.mini { padding: 6px 8px; font-size: 11px; }
     .btn.icon { width: 36px; height: 36px; display: grid; place-items: center; padding: 0; }
     .btn.filter.active { background: #0f172a; color: #fff; border-color: #0f172a; }
     .btn:active { transform: translateY(1px); }
@@ -2913,13 +3135,26 @@ html = """<!DOCTYPE html>
     .section:not([open]) summary::after { content: "Mostrar"; }
     .section-content { border-top: 1px solid var(--line); padding: 10px 12px 12px; }
     .small { font-size: 12px; color: var(--muted); line-height: 1.35; }
+    .explain { margin: 9px 0 0; padding: 9px 10px; border-left: 3px solid var(--accent); background: #f8fafc; border-radius: 6px; }
+    .legend-grid { display: grid; gap: 8px; }
+    .legend-item { display: grid; grid-template-columns: 22px 1fr; gap: 8px; align-items: start; padding: 8px; border: 1px solid var(--line); border-radius: 7px; background: #fff; }
+    .legend-mark { width: 18px; height: 18px; border-radius: 99px; margin-top: 1px; border: 2px solid currentColor; background: currentColor; }
+    .legend-line { height: 0; width: 22px; border-top: 5px solid currentColor; border-radius: 99px; margin-top: 8px; }
+    .legend-dash { border-top-style: dashed; }
+    .insight-list { display: grid; gap: 8px; }
+    .insight { border: 1px solid var(--line); border-radius: 7px; background: #fff; padding: 9px 10px; }
+    .insight b { display: block; font-size: 12px; color: var(--ink); margin-bottom: 3px; }
     .metric-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
     .metric { border: 1px solid var(--line); border-radius: 7px; padding: 10px; background: var(--surface-solid); min-height: 64px; }
     .metric .label { display: block; color: var(--muted); font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; }
     .metric .value { display: block; margin-top: 6px; font-size: 21px; line-height: 1; font-weight: 900; }
     .slider-row { display: grid; grid-template-columns: 66px 1fr 44px; gap: 10px; align-items: center; margin-top: 8px; }
     input[type="range"] { width: 100%; accent-color: var(--accent); }
-    .truck-icon { width: 30px; height: 30px; border-radius: 999px; display: grid; place-items: center; background: #fff; border: 2px solid currentColor; box-shadow: 0 6px 16px rgba(15,23,42,.25); font-size: 11px; font-weight: 900; }
+    .truck-icon { width: 38px; height: 26px; border-radius: 6px; display: grid; place-items: center; background: currentColor; border: 2px solid #fff; box-shadow: 0 6px 16px rgba(15,23,42,.28); font-size: 11px; font-weight: 900; color: inherit; position: relative; }
+    .truck-icon span { color: #fff; line-height: 1; }
+    .truck-icon::before, .truck-icon::after { content: ""; position: absolute; bottom: -5px; width: 8px; height: 8px; border-radius: 99px; background: #172033; border: 2px solid #fff; }
+    .truck-icon::before { left: 6px; }
+    .truck-icon::after { right: 6px; }
     .truck-card { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #fff; margin-bottom: 8px; }
     .truck-card.active { border-color: currentColor; box-shadow: inset 4px 0 0 currentColor; }
     .truck-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 10px; }
@@ -2932,6 +3167,14 @@ html = """<!DOCTYPE html>
     .stat-line span { color: var(--muted); font-size: 11px; }
     .progress { margin-top: 10px; height: 7px; background: #e2e8f0; border-radius: 99px; overflow: hidden; }
     .progress i { display: block; height: 100%; width: var(--p); background: currentColor; }
+    .mini-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin-top: 9px; }
+    .mini-stat { background: var(--soft); border-radius: 6px; padding: 8px; min-width: 0; }
+    .mini-stat b { display: block; color: var(--ink); font-size: 13px; }
+    .mini-stat span { color: var(--muted); font-size: 11px; }
+    .trip-card { border: 1px solid var(--line); border-radius: 8px; background: #fff; padding: 10px; margin-bottom: 8px; }
+    .trip-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+    .trip-title { font-weight: 900; font-size: 13px; color: var(--ink); }
+    .trip-flow { font-size: 12px; color: var(--muted); line-height: 1.35; }
     .route-table-wrap { overflow: auto; max-height: 43vh; border: 1px solid var(--line); border-radius: 8px; }
     .route-table { width: 100%; border-collapse: collapse; font-size: 12px; background: #fff; }
     .route-table th { position: sticky; top: 0; background: #fff; text-align: left; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--line); padding: 8px 6px; }
@@ -2990,6 +3233,7 @@ html = """<!DOCTYPE html>
             <input id="speedPremium" type="range" min="0.25" max="6" step="0.25" value="1.5">
             <span id="speedValPremium" class="small">1.5x</span>
           </div>
+          <p class="small explain"><b>Play superior:</b> anima la jornada completa. <b>Animar en un viaje:</b> reproduce solo ese viaje del camion seleccionado.</p>
         </div>
       </details>
 
@@ -2997,13 +3241,34 @@ html = """<!DOCTYPE html>
         <summary>Indicadores globales</summary>
         <div class="section-content">
           <div class="metric-grid" id="globalMetricsPremium"></div>
+          <div class="explain small">
+            <b>Lectura global:</b> estos indicadores resumen toda la operacion. Sirven para saber cuanta basura se cubre, cuanta flota se usa, que distancia se recorre y cuanto cuesta operar el plan.
+          </div>
         </div>
       </details>
 
       <details class="section" open>
-        <summary>Capas</summary>
+        <summary>Leyenda del mapa</summary>
         <div class="section-content">
-          <p class="small">Cada ruta visible corresponde a un camion asignado. Todas las rutas respetan capacidad maxima, flujo Estacion -> Recoleccion -> Relleno y sentidos del grafo vial.</p>
+          <div class="legend-grid">
+            <div class="legend-item"><span class="legend-line" style="color:#cfd6df"></span><span class="small"><b>Ruta planificada:</b> recorrido completo antes de presionar Play.</span></div>
+            <div class="legend-item"><span class="legend-line" style="color:#0f766e"></span><span class="small"><b>Ruta recorrida:</b> tramo que se va pintando durante la animacion.</span></div>
+            <div class="legend-item"><span class="legend-mark" style="color:#f97316"></span><span class="small"><b>Clientes:</b> puntos donde se recoge basura. El tamano puede variar segun demanda.</span></div>
+            <div class="legend-item"><span class="legend-line legend-dash" style="color:#2563eb"></span><span class="small"><b>Sectores y viajes:</b> areas iniciales y viajes individuales que se pueden activar desde capas.</span></div>
+          </div>
+          <p class="small explain"><b>Codigo 2.3:</b> Camion 2, Viaje 3. Cada viaje sale desde estacion o relleno, recoge clientes y descarga en el relleno sanitario.</p>
+        </div>
+      </details>
+
+      <details class="section" open>
+        <summary>Como interpretar</summary>
+        <div class="section-content">
+          <div class="insight-list">
+            <div class="insight small"><b>Viajes</b> Cantidad de recorridos operativos. Un camion puede tener mas de un viaje.</div>
+            <div class="insight small"><b>Camiones</b> Muestra usados / disponibles. Si se acerca al maximo, la flota esta ajustada.</div>
+            <div class="insight small"><b>Eficiencia</b> Toneladas recolectadas por kilometro. Mientras mas alto, mejor aprovechamiento del recorrido.</div>
+            <div class="insight small"><b>Jornada</b> Tiempo total acumulado de la flota, no la duracion de un solo camion.</div>
+          </div>
         </div>
       </details>
     </div>
@@ -3018,14 +3283,28 @@ html = """<!DOCTYPE html>
     </div>
     <div class="panel-body">
       <details class="section" open>
-        <summary>Rutas asignadas</summary>
+        <summary>Lectura rapida</summary>
+        <div class="section-content">
+          <div id="operationSummaryPremium" class="insight-list"></div>
+        </div>
+      </details>
+
+      <details class="section" open>
+        <summary>Indicadores por camion</summary>
         <div class="section-content">
           <div id="truckCardsPremium"></div>
         </div>
       </details>
 
+      <details class="section" open>
+        <summary>Viajes por camion</summary>
+        <div class="section-content">
+          <div id="tripCardsPremium"></div>
+        </div>
+      </details>
+
       <details class="section">
-        <summary>Detalle de viajes</summary>
+        <summary>Tabla de tramos</summary>
         <div class="section-content">
           <div class="route-table-wrap">
             <table class="route-table">
@@ -3059,7 +3338,7 @@ html = """<!DOCTYPE html>
   <div class="metric-grid" id="globalMetrics"></div>
 
   <div class="small">
-    Tip: Activa/desactiva capas desde el control (arriba derecha).
+    Activa o desactiva capas desde el control ubicado en la esquina superior derecha.
   </div>
 </div>
 
@@ -3088,6 +3367,7 @@ html = """<!DOCTYPE html>
   const CALLES   = __CALLES__;
   const SECTORES = __SECTORES__;
   const RUTAS    = __RUTAS__;
+  const RUTAS_VIAJES = __RUTAS_VIAJES__;
   const METRICAS = __METRICAS__;
 
   // Mapa base
@@ -3096,9 +3376,9 @@ html = """<!DOCTYPE html>
     zoom: 14
   });
 
-  const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  const osm = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
     maxZoom: 19,
-    attribution: '&copy; OpenStreetMap'
+    attribution: '&copy; OpenStreetMap &copy; CARTO'
   }).addTo(map);
 
   // Capas overlay
@@ -3108,10 +3388,10 @@ html = """<!DOCTYPE html>
     const r = Math.max(2, Math.min(10, 2 + d/200));
     return {
       radius: r,
-      color: "#111827",
+      color: "#9a3412",
       weight: 1,
       fillColor: "#f97316",
-      fillOpacity: 0.85
+      fillOpacity: 0.82
     };
   }
 
@@ -3137,7 +3417,7 @@ html = """<!DOCTYPE html>
   });
 
   const layerCalles = L.geoJSON(CALLES, {
-    style: { color: "#22c55e", weight: 2, opacity: 0.55 }
+    style: { color: "#cbd5e1", weight: 1.2, opacity: 0.5 }
   });
 
   // Rutas por camion (lineas)
@@ -3146,7 +3426,7 @@ html = """<!DOCTYPE html>
     style: f => {
       const z = Number((f.properties || {}).zona || 1);
       const color = coloresSectores[(z - 1) % coloresSectores.length];
-      return { color, weight: 2, opacity: 0.75, fillColor: color, fillOpacity: 0.11, dashArray: "7 5" };
+      return { color, weight: 2, opacity: 0.72, fillColor: color, fillOpacity: 0.1, dashArray: "7 5" };
     },
     onEachFeature: (f, layer) => {
       const p = f.properties || {};
@@ -3158,9 +3438,16 @@ html = """<!DOCTYPE html>
     }
   });
 
-  function polylineFromRuta(rutaLatLon, color) {
-    if (!rutaLatLon || rutaLatLon.length < 2) return null;
-    return L.polyline(rutaLatLon, { color, weight: 5, opacity: 0.9 });
+  function polylineFromRuta(rutaLatLon, color, options = {}) {
+    if ((!rutaLatLon || rutaLatLon.length < 2) && !options.allowEmpty) return null;
+    return L.polyline(rutaLatLon, {
+      color,
+      weight: options.weight || 5,
+      opacity: options.opacity ?? 0.9,
+      dashArray: options.dashArray || null,
+      lineCap: "round",
+      lineJoin: "round"
+    });
   }
 
   const servicioMeta = {};
@@ -3168,16 +3455,23 @@ html = """<!DOCTYPE html>
 
   function colorForService(id) {
     const n = Number(id) || 1;
-    const hue = (n * 137.508) % 360;
-    return `hsl(${hue.toFixed(1)} 72% 42%)`;
+    const palette = ["#0f766e", "#2563eb", "#dc2626", "#ca8a04", "#7c3aed", "#0891b2", "#16a34a", "#be185d", "#ea580c", "#475569"];
+    return palette[(n - 1) % palette.length];
   }
 
   const colores = {};
   Object.keys(RUTAS).forEach(k => { colores[k] = colorForService(k); });
   const layerRutas = {};
+  const layerRutasBase = {};
+  const layerRutasDibujo = {};
   Object.keys(RUTAS).forEach(k => {
-    const poly = polylineFromRuta(RUTAS[k], colores[k] || "#111827");
-    if (poly) layerRutas[k] = poly;
+    const base = polylineFromRuta(RUTAS[k], "#d6dbe3", { weight: 5, opacity: 0.62 });
+    const dibujo = polylineFromRuta([], colores[k] || "#111827", { weight: 7, opacity: 1, allowEmpty: true });
+    if (base && dibujo) {
+      layerRutasBase[k] = base;
+      layerRutasDibujo[k] = dibujo;
+      layerRutas[k] = base;
+    }
   });
 
   const fmt = new Intl.NumberFormat("es-EC", { maximumFractionDigits: 1 });
@@ -3233,6 +3527,21 @@ html = """<!DOCTYPE html>
       ].join("");
     }
 
+    const summary = document.getElementById("operationSummaryPremium");
+    if (summary) {
+      const camionesUsados = Number(global.camiones_usados || 0);
+      const camionesMax = Number(global.camiones_maximos || 0);
+      const viajes = Number(global.viajes_asignados || 0);
+      const promedioViajes = camionesUsados > 0 ? viajes / camionesUsados : 0;
+      const usoFlota = camionesMax > 0 ? (camionesUsados / camionesMax) * 100 : 0;
+      summary.innerHTML = [
+        `<div class="insight small"><b>Cobertura del escenario</b> Se asignaron ${fmt0.format(viajes)} viajes para cubrir ${fmt.format(cargaTotalTon)} toneladas de basura.</div>`,
+        `<div class="insight small"><b>Uso de flota</b> Se usan ${fmt0.format(camionesUsados)} de ${fmt0.format(camionesMax)} camiones disponibles (${fmt.format(usoFlota)}%).</div>`,
+        `<div class="insight small"><b>Trabajo por camion</b> Cada camion realiza en promedio ${fmt.format(promedioViajes)} viaje(s).</div>`,
+        `<div class="insight small"><b>Lectura economica</b> El costo operativo estimado es $${fmt.format(costoOperativo)}, incluyendo diesel y costo laboral proporcional.</div>`
+      ].join("");
+    }
+
     const cards = document.getElementById("truckCardsPremium");
     if (cards) {
       cards.innerHTML = (METRICAS.camiones || []).map(c => {
@@ -3241,6 +3550,9 @@ html = """<!DOCTYPE html>
         const cargaTotal = Number(c.carga_kg || 0) / 1000;
         const cargaMaxViaje = Number(c.carga_max_viaje_kg || 0) / 1000;
         const cargaPct = capacidad > 0 ? Math.min(100, (cargaMaxViaje / capacidad) * 100) : 0;
+        const usoJornada = Number(c.uso_jornada_pct || 0);
+        const viajesCamion = Number(c.viajes || 0);
+        const cargaProm = viajesCamion > 0 ? cargaTotal / viajesCamion : 0;
         return `
           <article class="truck-card" id="truckCard-${c.id}" style="color:${color}">
             <div class="truck-top">
@@ -3254,7 +3566,39 @@ html = """<!DOCTYPE html>
               <div><b>${fmt.format(c.distancia_km || 0)}</b><span>km</span></div>
             </div>
             <div class="progress" style="--p:${cargaPct}%"><i></i></div>
-            <div class="small" style="margin-top:7px;">Carga jornada: ${fmt.format(cargaTotal)} t - Mayor viaje: ${fmt.format(cargaMaxViaje)} / ${fmt.format(capacidad)} t</div>
+            <div class="mini-grid">
+              <div class="mini-stat"><b>${fmt.format(cargaTotal)} t</b><span>carga total</span></div>
+              <div class="mini-stat"><b>${fmt.format(cargaProm)} t</b><span>promedio/viaje</span></div>
+              <div class="mini-stat"><b>${fmt.format(cargaMaxViaje)} / ${fmt.format(capacidad)} t</b><span>mayor viaje</span></div>
+              <div class="mini-stat"><b>${fmt.format(usoJornada)}%</b><span>uso jornada</span></div>
+            </div>
+            <div class="small explain">La barra muestra que tan cargado estuvo el viaje mas pesado de este camion frente a su capacidad maxima.</div>
+          </article>
+        `;
+      }).join("");
+    }
+
+    const tripCards = document.getElementById("tripCardsPremium");
+    if (tripCards) {
+      tripCards.innerHTML = (METRICAS.viajes || []).map(v => {
+        const c = String(v.camion);
+        const color = colores[c] || "#111827";
+        const totalKmViaje = Number(v.aprox_km || 0) + Number(v.recoleccion_km || 0) + Number(v.descarga_km || 0) + Number(v.cierre_km || 0);
+        const totalMinViaje = Number(v.aprox_min || 0) + Number(v.recoleccion_min || 0) + Number(v.descarga_min || 0) + Number(v.cierre_min || 0) + Number(v.espera_desalojo_min || 0);
+        return `
+          <article class="trip-card" data-camion="${c}" data-viaje="${v.viaje}">
+            <div class="trip-card-head">
+              <div class="trip-title"><span class="swatch" style="background:${color}"></span>Camion ${v.camion} - Viaje ${v.viaje}</div>
+              <button class="btn mini secondary" data-trip-key="${c}-${v.viaje}">Animar</button>
+            </div>
+            <span class="pill">${fmt.format(cargaTon(v))} / ${fmt.format(capacidadTon(v))} t</span>
+            <div class="trip-flow">Origen: ${v.origen || "N/A"} -> recoleccion de clientes -> relleno sanitario</div>
+            <div class="mini-grid">
+              <div class="mini-stat"><b>${fmt.format(totalKmViaje)} km</b><span>distancia total</span></div>
+              <div class="mini-stat"><b>${formatMinutes(totalMinViaje)}</b><span>tiempo estimado</span></div>
+              <div class="mini-stat"><b>${fmt.format(v.recoleccion_km || 0)} km</b><span>solo recoleccion</span></div>
+              <div class="mini-stat"><b>${formatMinutes(v.recoleccion_min || 0)}</b><span>tiempo recogiendo</span></div>
+            </div>
           </article>
         `;
       }).join("");
@@ -3265,16 +3609,16 @@ html = """<!DOCTYPE html>
       rows.innerHTML = (METRICAS.viajes || []).flatMap(v => {
         const c = String(v.camion);
         const color = colores[c] || "#111827";
-        const base = `<td><span class="swatch" style="background:${color}"></span>${v.camion}</td><td>${v.vehiculo || "-"}</td>`;
+        const base = `<td><span class="swatch" style="background:${color}"></span>${v.camion}.${v.viaje}</td><td>${v.vehiculo || "-"}</td>`;
         const out = [];
-        out.push(`<tr data-camion="${c}">${base}<td>Aproximacion desde ${v.origen}</td><td>${fmt.format(v.aprox_km || 0)}</td><td>${formatMinutes(v.aprox_min || 0)}</td></tr>`);
+        out.push(`<tr data-camion="${c}" data-viaje="${v.viaje}">${base}<td>Aproximacion desde ${v.origen}</td><td>${fmt.format(v.aprox_km || 0)}</td><td>${formatMinutes(v.aprox_min || 0)}</td></tr>`);
         const cargaTxt = `${fmt.format(cargaTon(v))} / ${fmt.format(capacidadTon(v))} t`;
-        out.push(`<tr data-camion="${c}">${base}<td>Recoleccion (${cargaTxt})</td><td>${fmt.format(v.recoleccion_km || 0)}</td><td>${formatMinutes(v.recoleccion_min || 0)}</td></tr>`);
+        out.push(`<tr data-camion="${c}" data-viaje="${v.viaje}">${base}<td>Recoleccion (${cargaTxt})</td><td>${fmt.format(v.recoleccion_km || 0)}</td><td>${formatMinutes(v.recoleccion_min || 0)}</td></tr>`);
         if ((v.descarga_km || 0) > 0 || (v.descarga_min || 0) > 0) {
-          out.push(`<tr data-camion="${c}">${base}<td>Descarga final en relleno</td><td>${fmt.format(v.descarga_km || 0)}</td><td>${formatMinutes(v.descarga_min || 0)}</td></tr>`);
+          out.push(`<tr data-camion="${c}" data-viaje="${v.viaje}">${base}<td>Descarga final en relleno</td><td>${fmt.format(v.descarga_km || 0)}</td><td>${formatMinutes(v.descarga_min || 0)}</td></tr>`);
         }
         if ((v.cierre_km || 0) > 0 || (v.cierre_min || 0) > 0) {
-          out.push(`<tr data-camion="${c}">${base}<td>Cierre: regreso al punto de inicio</td><td>${fmt.format(v.cierre_km || 0)}</td><td>${formatMinutes(v.cierre_min || 0)}</td></tr>`);
+          out.push(`<tr data-camion="${c}" data-viaje="${v.viaje}">${base}<td>Cierre: regreso al punto de inicio</td><td>${fmt.format(v.cierre_km || 0)}</td><td>${formatMinutes(v.cierre_min || 0)}</td></tr>`);
         }
         return out;
       }).join("");
@@ -3295,6 +3639,17 @@ html = """<!DOCTYPE html>
     overlays[`Ruta ${k}`] = layerRutas[k];
   });
 
+  const tripLayers = {};
+  Object.keys(RUTAS_VIAJES || {}).forEach(key => {
+    const item = RUTAS_VIAJES[key];
+    const color = colores[String(item.camion)] || "#111827";
+    const poly = polylineFromRuta(item.coords, color, { weight: 3, opacity: 0.55, dashArray: "3 7" });
+    if (poly) {
+      tripLayers[key] = poly;
+      overlays[`Camion ${item.camion} - Viaje ${item.viaje}`] = poly;
+    }
+  });
+
   L.control.layers({ "OSM": osm }, overlays, { collapsed: true }).addTo(map);
 
   // Mostrar por defecto
@@ -3302,9 +3657,10 @@ html = """<!DOCTYPE html>
   layerClave.addTo(map);
   layerClientes.addTo(map);
   Object.keys(layerRutas).forEach(k => layerRutas[k].addTo(map));
+  Object.keys(layerRutasDibujo).forEach(k => layerRutasDibujo[k].addTo(map));
 
   // Fit a rutas
-  const allPolys = Object.values(layerRutas);
+  const allPolys = Object.values(layerRutasBase);
   if (allPolys.length > 0) {
     const group = L.featureGroup(allPolys);
     map.fitBounds(group.getBounds().pad(0.08));
@@ -3348,6 +3704,23 @@ html = """<!DOCTYPE html>
     return [a[0] + (b[0]-a[0]) * t, a[1] + (b[1]-a[1]) * t];
   }
 
+  function coordsUntilDistance(coords, cumDist, dist) {
+    if (!coords || coords.length < 2) return [];
+    const total = cumDist[cumDist.length - 1];
+    if (dist <= 0) return [];
+    if (dist >= total) return coords;
+
+    const parcial = [coords[0]];
+    let i = 1;
+    while (i < cumDist.length && cumDist[i] <= dist) {
+      parcial.push(coords[i]);
+      i++;
+    }
+    const pos = interpolateAlong(coords, cumDist, dist);
+    if (pos) parcial.push(pos);
+    return parcial;
+  }
+
   // Crear un camión por ruta
   const trucks = [];
   const truckByRoute = {};
@@ -3357,9 +3730,9 @@ html = """<!DOCTYPE html>
 
     const icon = L.divIcon({
       className: '',
-      html: `<div class="truck-icon">R${k}</div>`,
-      iconSize: [22,22],
-      iconAnchor: [11,11]
+      html: `<div class="truck-icon" style="color:${colores[k] || "#111827"}"><span>C${k}</span></div>`,
+      iconSize: [38,32],
+      iconAnchor: [19,16]
     });
 
     const marker = L.marker(coords[0], { icon }).addTo(map);
@@ -3374,30 +3747,68 @@ html = """<!DOCTYPE html>
     truckByRoute[k] = marker;
   });
 
+  let activeRuns = null;
+
+  function clearDrawnRoutes() {
+    Object.keys(layerRutasDibujo).forEach(id => layerRutasDibujo[id].setLatLngs([]));
+  }
+
+  function resetTruckPositions() {
+    trucks.forEach(t => {
+      t.dist = 0;
+      if (t.coords[0]) t.marker.setLatLng(t.coords[0]);
+    });
+  }
+
+  function buildRun(id, coords) {
+    return {
+      id: String(id),
+      coords,
+      cum: buildCumulativeDistances(coords),
+      dist: 0,
+      marker: truckByRoute[String(id)]
+    };
+  }
+
+  function startAnimation(runs) {
+    running = false;
+    lastT = null;
+    clearDrawnRoutes();
+    activeRuns = runs || null;
+    const animables = activeRuns || trucks;
+    animables.forEach(t => {
+      t.dist = 0;
+      if (t.coords && t.coords[0] && t.marker) t.marker.setLatLng(t.coords[0]);
+    });
+    running = true;
+    requestAnimationFrame(tick);
+  }
+
+  document.querySelectorAll("[data-trip-key]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const key = btn.getAttribute("data-trip-key");
+      const item = RUTAS_VIAJES[key];
+      if (!item || !item.coords || item.coords.length < 2) return;
+      startAnimation([buildRun(item.camion, item.coords)]);
+    });
+  });
+
   function camionIdFromLayerName(name) {
-    const match = String(name || "").match(/(\\d+)$/);
+    const match = String(name || "").match(/^Ruta\\s+(\\d+)$/);
     return match ? match[1] : null;
   }
 
   function setRouteUiState(id, visible) {
     const card = document.getElementById(`truckCard-${id}`);
     if (card) card.classList.toggle("active", visible);
-    document.querySelectorAll(`[data-camion="${id}"]`).forEach(row => {
-      row.style.display = visible ? "" : "none";
-    });
   }
 
   function setServiceVisible(id, visible) {
     const key = String(id);
     const route = layerRutas[key];
-    const marker = truckByRoute[key];
     if (route) {
       if (visible && !map.hasLayer(route)) route.addTo(map);
       if (!visible && map.hasLayer(route)) map.removeLayer(route);
-    }
-    if (marker) {
-      if (visible && !map.hasLayer(marker)) marker.addTo(map);
-      if (!visible && map.hasLayer(marker)) map.removeLayer(marker);
     }
     setRouteUiState(key, visible);
   }
@@ -3405,15 +3816,13 @@ html = """<!DOCTYPE html>
   Object.keys(truckByRoute).forEach(id => setRouteUiState(id, true));
   map.on("overlayremove", e => {
     const id = camionIdFromLayerName(e.name);
-    if (id && truckByRoute[id] && map.hasLayer(truckByRoute[id])) {
-      map.removeLayer(truckByRoute[id]);
+    if (id) {
       setRouteUiState(id, false);
     }
   });
   map.on("overlayadd", e => {
     const id = camionIdFromLayerName(e.name);
-    if (id && truckByRoute[id] && !map.hasLayer(truckByRoute[id])) {
-      truckByRoute[id].addTo(map);
+    if (id) {
       setRouteUiState(id, true);
     }
   });
@@ -3437,12 +3846,16 @@ html = """<!DOCTYPE html>
     const factor = getSpeedFactor();
     const step = BASE_MPS * factor * dt;
 
-    trucks.forEach(t => {
+    const animables = activeRuns || trucks;
+    animables.forEach(t => {
       t.dist += step;
       const total = t.cum[t.cum.length-1];
       if (t.dist > total) t.dist = total;
       const pos = interpolateAlong(t.coords, t.cum, t.dist);
-      if (pos) t.marker.setLatLng(pos);
+      if (pos && t.marker) t.marker.setLatLng(pos);
+      if (layerRutasDibujo[t.id]) {
+        layerRutasDibujo[t.id].setLatLngs(coordsUntilDistance(t.coords, t.cum, t.dist));
+      }
     });
 
     requestAnimationFrame(tick);
@@ -3470,9 +3883,8 @@ html = """<!DOCTYPE html>
 
   document.getElementById("btnPlayPremium").addEventListener("click", () => {
     if (!running) {
-      running = true;
-      lastT = null;
-      requestAnimationFrame(tick);
+      activeRuns = null;
+      startAnimation(null);
     }
   });
 
@@ -3483,10 +3895,9 @@ html = """<!DOCTYPE html>
   document.getElementById("btnResetPremium").addEventListener("click", () => {
     running = false;
     lastT = null;
-    trucks.forEach(t => {
-      t.dist = 0;
-      t.marker.setLatLng(t.coords[0]);
-    });
+    activeRuns = null;
+    resetTruckPositions();
+    clearDrawnRoutes();
   });
 </script>
 </body>
@@ -3499,6 +3910,7 @@ html = html.replace("__CLAVE__", json.dumps(clave_geojson))
 html = html.replace("__CALLES__", json.dumps(calles_geojson))
 html = html.replace("__SECTORES__", json.dumps(sectores_geojson))
 html = html.replace("__RUTAS__", json.dumps(rutas_camiones))
+html = html.replace("__RUTAS_VIAJES__", json.dumps(rutas_viajes))
 html = html.replace("__METRICAS__", json.dumps(metricas_html))
 html = html.replace("__CENTRO_LAT__", str(centro_lat))
 html = html.replace("__CENTRO_LON__", str(centro_lon))
@@ -3506,10 +3918,10 @@ html = html.replace("__CENTRO_LON__", str(centro_lon))
 with open(OUT_HTML, "w", encoding="utf-8") as f:
     f.write(html)
 
-print(f"✅ HTML generado: {OUT_HTML}")
-print("   Ábrelo en tu navegador (doble click).")
+print(f"HTML generado: {OUT_HTML}")
+print("   Archivo listo para abrir en el navegador.")
 
-# CELDA KPI (SOLO COLAB): Estadísticas + KPIs (por viaje / por camión / global) mostrando tablas
+# Calculo y exportacion de KPIs operativos
 import pandas as pd
 import numpy as np
 
@@ -3535,10 +3947,10 @@ def gini_coefficient(x):
     g = (n + 1 - 2 * np.sum(cum) / cum[-1]) / n
     return float(g)
 
-print("📊 Generando KPIs (modo Colab)...")
+print("Generando KPIs operativos...")
 
 # =========================================================
-# 0) Dataframe por NODO (basura + densidad si existe CELDA 7)
+# DataFrame por nodo
 # =========================================================
 df_nodos = pd.DataFrame({
     "id_nodo": [int(n) for n in nodos_clientes],
@@ -3559,7 +3971,7 @@ total_demanda = float(df_nodos["demanda_kg"].sum())
 gini_demanda = gini_coefficient(df_nodos["demanda_kg"].values)
 
 # =========================================================
-# 1) Desglose por VIAJE desde camiones (CELDA 6)
+# Desglose por viaje desde la asignacion de camiones
 # =========================================================
 filas_viajes = []
 for c in camiones:
@@ -3702,7 +4114,7 @@ if hay_densidad:
 # 4) Mostrar (Colab)
 # =========================================================
 print("\n======================")
-print("✅ KPI GLOBAL")
+print("KPI GLOBAL")
 print("======================")
 print(f"Camiones usados: {n_camiones}")
 print(f"Rutas asignadas: {n_servicios}")
@@ -3724,14 +4136,14 @@ else:
     print("Densidad poblacional: no detectada (gdf_pts no está o no tiene densidad_pob_km2).")
 
 print("\n======================")
-print("🚛 KPI POR CAMIÓN")
+print("KPI POR CAMION")
 print("======================")
 display(
     df_camiones.sort_values("camion").round(2)
 )
 
 print("\n======================")
-print("🧾 KPI POR VIAJE (top 20 más largos por tiempo)")
+print("KPI POR VIAJE (top 20 mas largos por tiempo)")
 print("======================")
 if len(df_viajes) > 0:
     display(
@@ -3741,13 +4153,13 @@ else:
     print("No hay viajes en df_viajes.")
 
 print("\n======================")
-print("🔥 Hotspots por basura (top 15 nodos)")
+print("Hotspots por basura (top 15 nodos)")
 print("======================")
 display(df_nodos.sort_values("demanda_kg", ascending=False).head(15))
 
 if hay_densidad:
     print("\n======================")
-    print("🏙️ Hotspots por densidad poblacional (top 15 nodos)")
+    print("Hotspots por densidad poblacional (top 15 nodos)")
     print("======================")
     display(df_nodos.sort_values("densidad_pob_km2", ascending=False).head(15))
 
@@ -3755,4 +4167,6 @@ html_salida = Path(OUT_HTML).resolve()
 if html_salida.exists():
     print(f"HTML listo para abrir en local: {html_salida}")
 else:
-    print(f"⚠️ No se encontró {OUT_HTML} al final del proceso.")
+    print(f"Aviso: no se encontro {OUT_HTML} al final del proceso.")
+
+
