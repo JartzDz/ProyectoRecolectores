@@ -409,8 +409,6 @@ def crear_informe():
         [
             ["mapa_rutas_recoleccion_60t.html", "Mapa interactivo del escenario de 60 t."],
             ["mapa_rutas_recoleccion_120t.html", "Mapa interactivo del escenario de 120 t."],
-            ["rutas_animadas.html", "Visualización animada del escenario de 60 t."],
-            ["rutas_animadas_120t.html", "Visualización animada del escenario de 120 t."],
             ["rutas_tramos_Camion_X.gpkg", "Tramos geográficos por camión para abrir en QGIS."],
             ["base_clientes.gpkg", "Clientes con demanda, densidad poblacional y distancias a puntos clave."],
             ["base_calles.gpkg", "Red vial base exportada."],

@@ -1,0 +1,204 @@
+‭4. Cálculo de tiempos de recolección en función del volumen de‬
+ ‭basura‬
+‭Para estimar los tiempos de recolección en función de la cantidad de residuos generados,‬
+ ‭se utilizó como referencia el estudio Exploring the prospective efficacy of waste bag-body‬
+  ‭contact allowance to reduce biomechanical exposure in municipal waste collection, el cual‬
+   ‭analiza el tiempo requerido para la manipulación y levantamiento de bolsas de residuos‬
+    ‭durante la recolección municipal.‬
+
+‭Debido a que el estudio reporta un tiempo promedio de manipulación de 2.44 segundos‬
+ ‭para una bolsa de 20 kg, y no proporciona una función de comportamiento para diferentes‬
+  ‭pesos, se adoptó una aproximación lineal que permite estimar el tiempo de recolección en‬
+   ‭función de la cantidad de residuos generados. Bajo esta simplificación, se consideró un‬
+    ‭tiempo promedio equivalente a 0.122 s/kg.‬
+
+                                 ‭2.‬‭44‬‭‬‭𝑠‬
+                                  ‭20‬‭‬‭𝑘𝑔‬
+                                               ‭‬ = ‭‭0
+                                                      ‬ ‬. ‭122‬‭‭𝑠‬ ‬‭/‭𝑘
+                                                                         ‬ 𝑔‬
+
+‭De esta manera, en el presente trabajo el tiempo de recolección en cada punto se calcula‬
+ ‭proporcionalmente al peso estimado de residuos generados, utilizando como base un‬
+  ‭tiempo promedio de 0.122 segundos por kilogramo recolectado.‬
+
+‭5. Asignación de pesos de basura a nodos de clientes‬
+‭Para la estimación de la cantidad de residuos generados por los distintos tipos de‬
+ ‭establecimientos presentes en el área de estudio, se utilizaron los hallazgos reportados en‬
+  ‭los trabajos de Análisis de la generación per cápita y composición gravimétrica de residuos‬
+   ‭sólidos procedentes de diferentes fuentes de la ciudad de Cuenca y Evolución de las‬
+    ‭características de los residuos sólidos en el cantón Cuenca, ambos desarrollados‬
+     ‭específicamente para la ciudad de Cuenca.‬
+
+‭Estos estudios presentan valores de generación per cápita y tasas de generación de‬
+ ‭residuos para diferentes tipos de fuentes, como viviendas, hoteles, restaurantes, bares,‬
+  ‭instituciones educativas y mercados. A partir de esta información, se establecieron‬
+   ‭relaciones de generación relativa entre los distintos tipos de establecimientos, tomando‬
+    ‭como referencia la generación promedio de un hogar urbano.‬
+
+‭Posteriormente, dichas relaciones fueron asignadas a los nodos de clientes previamente‬
+ ‭identificados dentro del área de estudio, considerando el tipo de establecimiento asociado a‬
+  ‭cada nodo. Esto permite modelar la generación de residuos de manera dinámica y‬
+   ‭diferenciada, manteniendo una relación coherente con las características reales de‬
+    ‭generación de basura observadas en la ciudad de Cuenca.‬
+
+‭De esta manera, el modelo no asume una cantidad uniforme de residuos para todos los‬
+ ‭clientes, sino que ajusta el peso estimado recolectado según el tipo y magnitud de cada‬
+  ‭establecimiento, permitiendo representar de forma más realista la demanda de recolección‬
+   ‭en la red vial analizada.‬
+‭Relación estimada de generación de residuos por tipo de‬
+ ‭establecimiento‬
+
+
+
+  ‭Tipo de Edificio‬         ‭Capacidad /‬           ‭Basura Total‬        ‭Relación (x veces‬
+                              ‭Referencia‬        ‭Estimada (kg/día)‬     ‭más que una casa)‬
+
+ ‭Hogar Urbano‬        ‭3.73 habitantes por‬     ‭2.01 kg‬              ‭1.00‬
+  ‭(Base)‬              ‭casa‬
+
+ ‭Bar Grande‬          ‭> 51 clientes‬           ‭8.16 kg‬              ‭4 veces más‬
+
+ ‭Restaurante‬         ‭> 51 clientes‬           ‭17.08 kg‬             ‭8.5 veces más‬
+  ‭Grande‬
+
+ ‭Hotel Grande‬        ‭> 26 huéspedes‬          ‭11.44 kg‬             ‭5.7 veces más‬
+
+ ‭Escuela Fiscal‬      ‭~1,500 estudiantes‬      ‭74.55 kg‬             ‭37 veces más‬
+  ‭(Escala 3)‬
+
+ ‭Universidad‬         ‭~5,000 estudiantes‬      ‭223.50 kg‬            ‭111 veces más‬
+  ‭(Cuenca)‬            ‭(est.)‬
+
+ ‭Mercado‬             ‭Edificio/Recinto‬        ‭14,490.00 kg‬         ‭7,208 veces más‬
+                        ‭completo‬
+
+
+
+‭La tabla anterior evidencia que, aunque la generación individual de residuos puede ser‬
+ ‭relativamente baja en ciertos tipos de usuarios, la concentración de personas y actividades‬
+  ‭dentro de un mismo establecimiento incrementa considerablemente el volumen total de‬
+   ‭residuos generados. Por esta razón, el modelo considera diferentes pesos relativos para‬
+    ‭cada categoría de nodo, permitiendo representar de forma más precisa el impacto operativo‬
+     ‭que distintos establecimientos tienen sobre el sistema de recolección.‬
+
+‭Para cada categoría de establecimiento se estimó la generación diaria de residuos‬
+ ‭multiplicando la tasa de generación per cápita reportada en la literatura por la capacidad‬
+  ‭promedio de ocupación correspondiente a cada tipo de establecimiento.‬
+
+‭Los mercados constituyen uno de los mayores generadores de residuos sólidos urbanos‬
+ ‭debido a la concentración de actividades comerciales relacionadas con alimentos y‬
+  ‭productos perecibles, lo que explica los valores significativamente superiores observados‬
+   ‭respecto a otros tipos de establecimientos.‬
+
+
+
+‭6. Incremento del área de estudio‬
+‭Posteriormente, el área de estudio fue expandida para abarcar la zona de la ciudad de‬
+ ‭Cuenca delimitada por la Av. Héroes de Verdeloma, Av. De las Américas, Av. México, Av. 10‬
+  ‭de Agosto, calle Las Herrerías, Av. Huayna Cápac y Av. Gil Ramírez Dávalos. Esta‬
+   ‭ampliación permitió incorporar una representación más extensa y realista de la red vial y de‬
+‭los puntos de generación de residuos dentro del sector urbano analizado. Como resultado,‬
+ ‭el número total de clientes considerados aumentó de 307 a 1420 nodos clientes. Durante el‬
+  ‭proceso de validación de conectividad se identificaron 5 clientes inalcanzables dentro del‬
+   ‭grafo, los cuales fueron excluidos del análisis debido a la ausencia de conectividad dentro‬
+    ‭del grafo vial utilizado. Finalmente, con los nuevos clientes válidos se actualizó el archivo‬
+     ‭.graphml previamente generado, incorporando los nodos adicionales y sus respectivas‬
+      ‭relaciones dentro del grafo unificado utilizado para las simulaciones y algoritmos de‬
+       ‭optimización.‬
+
+
+
+
+‭7. Correcciones al grafo‬
+‭Se identificó un problema en el cálculo de distancias y tiempos de recorrido dentro del‬
+ ‭sistema de optimización de rutas. Este inconveniente se reflejaba en resultados poco‬
+  ‭realistas, como viajes extremadamente largos, tiempos de recorrido significativamente‬
+   ‭superiores a los valores esperados y rutas que no representan correctamente la red vial de‬
+    ‭la ciudad.‬
+
+‭Tras el análisis del grafo utilizado para modelar las calles de Cuenca, se encontró que las‬
+ ‭coordenadas de la red estaban almacenadas en un sistema geográfico basado en grados‬
+  ‭de latitud y longitud, mientras que las distancias de las aristas debían trabajarse en metros.‬
+   ‭Esta inconsistencia provocaba que algunas calles tuvieran longitudes incorrectas, afectando‬
+    ‭directamente los cálculos de distancia, velocidad y tiempo utilizados por los algoritmos de‬
+     ‭ruteo y optimización.‬
+‭Para solucionar el problema, se realizó una corrección completa del grafo vial. Primero,la‬
+ ‭red fue proyectada al sistema de referencia UTM Zona 17S (EPSG:32717), permitiendo que‬
+  ‭todas las posiciones y distancias se manejen en metros reales. Posteriormente, se‬
+   ‭calcularon las longitudes de cada tramo de vía utilizando la geometría real de las calles y se‬
+    ‭actualizaron nuevamente los tiempos de viaje en función de estas distancias corregidas y de‬
+     ‭las velocidades asignadas según el tipo de vía.‬
+
+‭Con esta corrección, el sistema ahora genera distancias y tiempos coherentes con la‬
+ ‭realidad, mejorando significativamente la precisión de las rutas obtenidas y evitando‬
+  ‭resultados anómalos en la planificación de recorridos.‬
+
+‭8. Compactación operativa de nodos clientes‬
+‭Durante el preprocesamiento de la red vial, se identificó que una proporción significativa de‬
+ ‭los nodos clientes presentaba condiciones geográficas que hacían innecesaria su‬
+  ‭tratamiento como puntos de recolección independientes. En particular, se detectaron dos‬
+   ‭situaciones recurrentes: nodos ubicados en callejones sin salida o tramos de acceso único,‬
+    ‭y nodos situados en lados opuestos de la misma calle a una distancia menor a 80 metros‬
+     ‭entre sí. En ambos casos, forzar al vehículo recolector a realizar paradas separadas para‬
+      ‭cada nodo implicaría recorridos redundantes que no se corresponden con la operativa real‬
+       ‭de recolección.‬
+
+‭Para abordar esta situación, se implementó una etapa de compactación operativa previa a‬
+ ‭la ejecución de los algoritmos de optimización. Esta etapa agrupa los nodos que cumplen‬
+  ‭alguna de las dos condiciones descritas, acumulando sus demandas en un único nodo‬
+   ‭representativo denominado nodo padre. De esta forma, el pipeline de optimización trabaja‬
+    ‭con un conjunto reducido de puntos sin pérdida de información sobre la demanda total.‬
+
+‭La detección de callejones se realizó analizando la estructura de conexiones de cada nodo‬
+ ‭cliente dentro del grafo vial. Un nodo es considerado callejón cuando su única posibilidad de‬
+  ‭acceso y salida depende de un mismo nodo vecino, es decir, cuando no existe una ruta‬
+   ‭alternativa para llegar o salir de él. Esto ocurre, por ejemplo, en entradas privadas, pasajes‬
+    ‭|peatonales con salida única o tramos de calle que terminan en fondo de saco. En estos‬
+     ‭casos, el vehículo recolector está obligado a entrar y retroceder por el mismo tramo, lo que‬
+      ‭no justifica tratarlo como un punto de parada independiente. Por ello, su demanda se‬
+       ‭transfiere al nodo vecino desde el cual se accede. Si ese nodo vecino también es un‬
+        ‭callejón, el proceso se repite en cadena hasta encontrar un punto de la red con conectividad‬
+         ‭normal.‬
+
+‭La detección de nodos en el mismo lado de calle se realizó en dos pasos. Primero, a cada‬
+ ‭nodo cliente se le asignó el conjunto de nombres de calles presentes en sus aristas‬
+  ‭adyacentes, tanto entrantes como salientes. Segundo, se aplicó un algoritmo de unión por‬
+   ‭conjuntos que agrupa pares de nodos que comparten el mismo nombre de calle y cuya‬
+    ‭distancia de red en ambas direcciones no supera el umbral de 80 metros. Este umbral fue‬
+     ‭seleccionado como una aproximación razonable a la longitud de una cuadra típica en la‬
+      ‭ciudad de Cuenca.‬
+
+‭Como resultado de la compactación operativa, el número de nodos clientes se redujo de‬
+ ‭1415 a 951, representando una disminución del 32.8%. De estos, 136 correspondieron a‬
+‭callejones y 328 a compactaciones laterales por lado de calle. La demanda total del sistema‬
+ ‭se mantuvo en 60.000 kg, confirmando que la fusión de nodos conserva íntegramente la‬
+  ‭información de generación de residuos.‬
+
+
+
+
+‭9. Resultados con la nueva área‬
+
+ ‭Viajes‬         ‭Camiones‬   ‭Carga‬       ‭Distancia‬   ‭Eficiencia‬   ‭Jornada‬    ‭Costo ($)‬
+                                ‭(Ton)‬       ‭(km)‬        ‭(Ton/km)‬
+
+ ‭6‬              ‭3‬          ‭60‬          ‭307.39‬      ‭0.1952‬       ‭19h 41m‬    ‭414.44‬
+
+ ‭11‬             ‭4‬          ‭120‬         ‭464.89‬      ‭0.2581‬       ‭24h 02m‬    ‭571.60‬
+
+
+
+‭Referencia:‬
+       ‭●‬ ‭Moore, S. M., et al. (2021).‬‭Exploring the prospective‬‭efficacy of waste bag-body‬
+             ‭contact allowance to reduce biomechanical exposure in municipal waste collection‬‭.‬
+              ‭Applied Ergonomics.‬
+        ‭●‬ ‭Fiallo Flor, R. C. (2020).‬‭Análisis de la generación per cápita y composición‬
+               ‭gravimétrica de residuos sólidos procedentes de diferentes fuentes de la ciudad de‬
+                ‭Cuenca‬‭(Trabajo de titulación). Escuela de Ingeniería‬‭Civil y Gerencia de‬
+     ‭Construcciones, Facultad de Ciencia y Tecnología, Universidad del Azuay, Cuenca,‬
+      ‭Ecuador.‬
+‭●‬ ‭Arévalo Vélez, C., & Muñoz Pauta, F. (2010).‬‭Evolución‬‭de las características de los‬
+       ‭residuos sólidos en el cantón Cuenca‬‭. Universidad‬‭del Azuay / Empresa Municipal‬
+        ‭de Aseo de Cuenca (EMAC EP), Cuenca, Ecuador.‬
+

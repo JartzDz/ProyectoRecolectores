@@ -32,6 +32,7 @@ ESCENARIO_COMPACTADO_KG = ESCENARIO_COMPACTADO_TON * 1000.0
 PIPELINE_COMPACTADOS_PATH = "clientes_compactados.gpkg"
 PIPELINE_COMPACTADOS_LAYER = "clientes"
 SALTAR_POIS_SI_HAY_COMPACTADOS = True
+UMBRAL_NODO_GRANDE_KG = 1000.0
 PRECIO_DIESEL_USD_GAL = 2.99
 RENDIMIENTO_KM_GAL = 4.5
 PESO_BASURA_NODOS_RESTAURANTES = 8.0
@@ -590,10 +591,30 @@ for _, row in gdf_compactados.iterrows():
 if not nodos_compactados:
     raise ValueError("La capa clientes del pipeline no contiene clientes compactados utilizables.")
 
-demanda_compactada_base_kg = sum(dict_demandas_compactadas.values())
+nodos_grandes_excluidos = [
+    (nodo, demanda)
+    for nodo, demanda in dict_demandas_compactadas.items()
+    if demanda >= UMBRAL_NODO_GRANDE_KG
+]
+if nodos_grandes_excluidos:
+    nodos_grandes_set = {nodo for nodo, _ in nodos_grandes_excluidos}
+    nodos_compactados = [nodo for nodo in nodos_compactados if nodo not in nodos_grandes_set]
+    dict_demandas_compactadas = {
+        nodo: demanda
+        for nodo, demanda in dict_demandas_compactadas.items()
+        if nodo not in nodos_grandes_set
+    }
+    if not nodos_compactados:
+        raise ValueError(
+            "Todos los clientes compactados superan el umbral de grandes generadores; "
+            "no quedan nodos de recoleccion regular para optimizar."
+        )
+
+demanda_compactada_base_kg = sum(demanda for _, demanda in nodos_grandes_excluidos) + sum(dict_demandas_compactadas.values())
+demanda_regular_base_kg = sum(dict_demandas_compactadas.values())
 factor_escenario_compactado = (
-    ESCENARIO_COMPACTADO_KG / demanda_compactada_base_kg
-    if demanda_compactada_base_kg > 0
+    ESCENARIO_COMPACTADO_KG / demanda_regular_base_kg
+    if demanda_regular_base_kg > 0
     else 1.0
 )
 dict_demandas_compactadas = {
@@ -617,9 +638,16 @@ dict_demandas = dict_demandas_compactadas
 print("\n--- CLIENTES COMPACTADOS DEL PIPELINE ---")
 print(f"Clientes compactados usados: {len(nodos_clientes)}")
 print(f"Demanda compactada base pipeline: {demanda_compactada_base_kg:.2f} kg")
+print(f"Demanda base regular redistribuible: {demanda_regular_base_kg:.2f} kg")
 print(f"Escenario compactado objetivo: {ESCENARIO_COMPACTADO_KG:.2f} kg")
 print(f"Factor escala escenario: {factor_escenario_compactado:.4f}")
 print(f"Demanda compactada total: {sum(dict_demandas.values()):.2f} kg")
+if nodos_grandes_excluidos:
+    carga_excluida = sum(demanda for _, demanda in nodos_grandes_excluidos)
+    print(
+        f"Grandes generadores excluidos: {len(nodos_grandes_excluidos)} "
+        f"({carga_excluida:.2f} kg, umbral {UMBRAL_NODO_GRANDE_KG:.0f} kg)"
+    )
 
 # Matriz origen-destino de distancias y tiempos por tramo
 import numpy as np
@@ -3253,7 +3281,7 @@ html = """<!DOCTYPE html>
           <div class="legend-grid">
             <div class="legend-item"><span class="legend-line" style="color:#cfd6df"></span><span class="small"><b>Ruta planificada:</b> recorrido completo antes de presionar Play.</span></div>
             <div class="legend-item"><span class="legend-line" style="color:#0f766e"></span><span class="small"><b>Ruta recorrida:</b> tramo que se va pintando durante la animacion.</span></div>
-            <div class="legend-item"><span class="legend-mark" style="color:#f97316"></span><span class="small"><b>Clientes:</b> puntos donde se recoge basura. El tamano puede variar segun demanda.</span></div>
+            <div class="legend-item"><span class="legend-mark" style="color:#f97316"></span><span class="small"><b>Clientes:</b> puntos de recoleccion regular. Mercados, centros comerciales y otros grandes generadores quedan excluidos.</span></div>
             <div class="legend-item"><span class="legend-line legend-dash" style="color:#2563eb"></span><span class="small"><b>Sectores y viajes:</b> areas iniciales y viajes individuales que se pueden activar desde capas.</span></div>
           </div>
           <p class="small explain"><b>Codigo 2.3:</b> Camion 2, Viaje 3. Cada viaje sale desde estacion o relleno, recoge clientes y descarga en el relleno sanitario.</p>
@@ -3382,6 +3410,21 @@ html = """<!DOCTYPE html>
   }).addTo(map);
 
   // Capas overlay
+  const UMBRAL_NODO_GRANDE_KG = __UMBRAL_NODO_GRANDE_KG__;
+  const NODOS_GRANDES_EXCLUIDOS = CLIENTES.features.filter(f => {
+    const p = f.properties || {};
+    const demanda = Number(p.demanda_kg || 0);
+    return demanda >= UMBRAL_NODO_GRANDE_KG;
+  });
+  const CLIENTES_RESIDENCIALES = {
+    ...CLIENTES,
+    features: CLIENTES.features.filter(f => {
+      const p = f.properties || {};
+      const demanda = Number(p.demanda_kg || 0);
+      return demanda < UMBRAL_NODO_GRANDE_KG;
+    })
+  };
+
   function styleClientes(feature) {
     const p = feature.properties || {};
     const d = (p.demanda_kg !== undefined && p.demanda_kg !== null) ? p.demanda_kg : 0;
@@ -3395,7 +3438,7 @@ html = """<!DOCTYPE html>
     };
   }
 
-  const layerClientes = L.geoJSON(CLIENTES, {
+  const layerClientes = L.geoJSON(CLIENTES_RESIDENCIALES, {
     pointToLayer: (f, latlng) => L.circleMarker(latlng, styleClientes(f)),
     onEachFeature: (f, layer) => {
       const p = f.properties || {};
@@ -3914,6 +3957,7 @@ html = html.replace("__RUTAS_VIAJES__", json.dumps(rutas_viajes))
 html = html.replace("__METRICAS__", json.dumps(metricas_html))
 html = html.replace("__CENTRO_LAT__", str(centro_lat))
 html = html.replace("__CENTRO_LON__", str(centro_lon))
+html = html.replace("__UMBRAL_NODO_GRANDE_KG__", str(UMBRAL_NODO_GRANDE_KG))
 
 with open(OUT_HTML, "w", encoding="utf-8") as f:
     f.write(html)
