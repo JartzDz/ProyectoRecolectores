@@ -53,7 +53,7 @@ Parametros principales:
 
 - `--escenario`: atajo para ejecutar `60t` o `120t`.
 - `--toneladas`: basura total del escenario.
-- `--capacidad-camion-kg`: capacidad maxima de cada camion por viaje.
+- `--capacidad-camion-kg`: capacidad maxima de cada camion por ruta.
 - `--camiones`: cantidad maxima de camiones disponibles.
 - `--horas-trabajo`: jornada maxima por camion.
 - `--vel-acercamiento`: velocidad desde estacion o relleno al primer cliente.
@@ -65,7 +65,7 @@ Parametros principales:
 - `--sueldo-recolector`: sueldo mensual por recolector.
 - `--sueldo-chofer`: sueldo mensual por chofer.
 - `--horas-nomina`: horas mensuales para estimar costo laboral.
-- `--tiempo-parada-seg`: tiempo de servicio por parada.
+- `--tiempo-parada-seg`: tiempo base por parada; el servicio se calcula como `T(w)=T_base+0.122w` segundos.
 - `--precio-diesel`: precio del diesel por galon.
 - `--rendimiento-km-gal`: rendimiento estimado del camion.
 - `--configurar-parametros`: abre el asistente interactivo de parametros aunque se use un escenario por consola.
@@ -82,7 +82,7 @@ python main.py --help
 
 - `mapa_rutas_recoleccion_<toneladas>t.html`: mapa interactivo.
 - `rutas_tramos_Camion_X.gpkg`: tramos geograficos de cada camion.
-- `kpi_viajes.csv`: resumen por viaje.
+- `kpi_viajes.csv`: resumen por ruta.
 - `kpi_camiones.csv`: resumen por camion.
 - `kpi_nodos.csv`: resumen por nodo/cliente.
 - `comparacion_*.csv`: tablas comparativas del algoritmo.
@@ -92,8 +92,8 @@ python main.py --help
 - Lineas grises: recorrido total planificado para cada camion.
 - Linea oscura: ruta que se va dibujando mientras avanza la animacion.
 - Marcador `R1`, `R2`, etc.: camion animado.
-- Codigo `2.3` en la tabla: Camion 2, Viaje 3.
-- Flujo de cada viaje: salida desde estacion o relleno, recoleccion de clientes y descarga final en relleno.
+- Codigo `2.3` en la tabla: Camion 2, ruta 3.
+- Flujo de cada ruta: salida desde estacion o relleno, recoleccion de clientes y descarga final en relleno.
 
 ## Capas
 
@@ -104,7 +104,7 @@ El control de capas del mapa permite activar o desactivar:
 - Puntos clave.
 - Calles base.
 - Ruta completa de cada camion.
-- Viajes individuales de cada camion.
+- Rutas individuales de cada camion.
 
 ## Notas de mantenimiento
 

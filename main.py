@@ -19,7 +19,8 @@ NUMERO_CHOFER_CAMION = 1
 SUELDO_RECOLECTORES_USD = 665.0
 SUELDO_CHOFER_USD = 801.0
 HORAS_NOMINA_MENSUAL = 160.0
-TIEMPO_PARADA_SEG = 30.0
+TIEMPO_PARADA_SEG = 10.0
+FACTOR_TIEMPO_PESO_SEG_KG = 0.122
 VELOCIDAD_ACERCAMIENTO_KMH = 50.0
 VELOCIDAD_RECOLECCION_KMH = 10.0
 VELOCIDAD_TRANSPORTE_KMH = 40.0
@@ -65,6 +66,7 @@ PARAMETROS_FALLBACK = {
     "sueldo_chofer_usd": SUELDO_CHOFER_USD,
     "horas_nomina_mensual": HORAS_NOMINA_MENSUAL,
     "tiempo_parada_seg": TIEMPO_PARADA_SEG,
+    "factor_tiempo_peso_seg_kg": FACTOR_TIEMPO_PESO_SEG_KG,
     "precio_diesel_usd_gal": PRECIO_DIESEL_USD_GAL,
     "rendimiento_km_gal": RENDIMIENTO_KM_GAL,
     "incluir_calles": True,
@@ -97,7 +99,7 @@ def cargar_parametros_usuario():
     )
     parser.add_argument("--toneladas", type=float, default=PARAMETROS_FALLBACK["toneladas"], help="Basura total del escenario en toneladas.")
     parser.add_argument("--escenario", choices=["60t", "120t"], default=None, help="Atajo para ejecutar escenarios predefinidos de 60 o 120 toneladas.")
-    parser.add_argument("--capacidad-camion-kg", type=float, default=PARAMETROS_FALLBACK["capacidad_camion_kg"], help="Capacidad maxima por viaje.")
+    parser.add_argument("--capacidad-camion-kg", type=float, default=PARAMETROS_FALLBACK["capacidad_camion_kg"], help="Capacidad maxima por ruta.")
     parser.add_argument("--camiones", type=int, default=PARAMETROS_FALLBACK["camiones"], help="Cantidad maxima de camiones disponibles.")
     parser.add_argument("--horas-trabajo", type=float, default=PARAMETROS_FALLBACK["horas_trabajo"], help="Horas maximas de trabajo por camion.")
     parser.add_argument("--vel-acercamiento", type=float, default=PARAMETROS_FALLBACK["vel_acercamiento"], help="Velocidad estacion/relleno hacia primer cliente.")
@@ -109,7 +111,7 @@ def cargar_parametros_usuario():
     parser.add_argument("--sueldo-recolector", type=float, default=PARAMETROS_FALLBACK["sueldo_recolector_usd"], help="Sueldo mensual por recolector en USD.")
     parser.add_argument("--sueldo-chofer", type=float, default=PARAMETROS_FALLBACK["sueldo_chofer_usd"], help="Sueldo mensual por chofer en USD.")
     parser.add_argument("--horas-nomina", type=float, default=PARAMETROS_FALLBACK["horas_nomina_mensual"], help="Horas mensuales usadas para estimar costo laboral.")
-    parser.add_argument("--tiempo-parada-seg", type=float, default=PARAMETROS_FALLBACK["tiempo_parada_seg"], help="Tiempo de servicio por parada en segundos.")
+    parser.add_argument("--tiempo-parada-seg", type=float, default=PARAMETROS_FALLBACK["tiempo_parada_seg"], help="Tiempo base por parada en T(w)=T_base+0.122w.")
     parser.add_argument("--precio-diesel", type=float, default=PARAMETROS_FALLBACK["precio_diesel_usd_gal"], help="Precio del diesel por galon en USD.")
     parser.add_argument("--rendimiento-km-gal", type=float, default=PARAMETROS_FALLBACK["rendimiento_km_gal"], help="Rendimiento estimado del camion en km/gal.")
     parser.add_argument("--salida-html", default=None, help="Nombre del HTML de salida. Si se omite, se arma con las toneladas.")
@@ -245,7 +247,7 @@ print(f"  Capacidad camion: {CAPACIDAD_MAXIMA_CAMION_KG:.0f} kg")
 print(f"  Camiones maximos: {NUM_VEHICULOS_MAX}")
 print(f"  Jornada maxima: {HORAS_TRABAJO_H:.1f} h")
 print(f"  Personal por camion: {NUMERO_RECOLECTORES_CAMION} recolectores, {NUMERO_CHOFER_CAMION} chofer(es)")
-print(f"  Tiempo por parada: {TIEMPO_PARADA_SEG:.0f} s")
+print(f"  Tiempo por parada: {TIEMPO_PARADA_SEG:.0f} s + {FACTOR_TIEMPO_PESO_SEG_KG:.3f} s/kg")
 print(f"  Diesel: ${PRECIO_DIESEL_USD_GAL:.2f}/gal | Rendimiento: {RENDIMIENTO_KM_GAL:.2f} km/gal")
 
 try:
@@ -662,7 +664,21 @@ V_ULTIMO_A_DEPOSITO  = VELOCIDAD_TRANSPORTE_KMH
 V_DEPOSITO_A_EST     = VELOCIDAD_RETORNO_KMH
 
 # Debe mantenerse consistente con la asignacion operativa.
-TIEMPO_RECOLECCION_POR_NODO = TIEMPO_PARADA_SEG  # segundos
+TIEMPO_RECOLECCION_POR_NODO = TIEMPO_PARADA_SEG  # T_base de T(w)=T_base+0.122w
+
+def tiempo_servicio_recoleccion_s(ruta_clientes, dict_demanda=None):
+    """
+    Tiempo de servicio en paradas compactadas.
+    Aplica T(w) = T_base + f*w, con T_base configurable y f=0.122 s/kg.
+    """
+    if not ruta_clientes:
+        return 0.0
+    demanda = dict_demanda if dict_demanda is not None else globals().get("dict_demandas", {})
+    total = 0.0
+    for nodo in ruta_clientes:
+        w = float(demanda.get(nodo, 0.0))
+        total += TIEMPO_PARADA_SEG + FACTOR_TIEMPO_PESO_SEG_KG * w
+    return total
 
 def vel_mps(vel_kmh: float) -> float:
     return vel_kmh * 1000.0 / 3600.0
@@ -715,16 +731,16 @@ def T(a, b, vel_kmh):
     return tiempo_segundos(D(a, b), vel_kmh)
 
 # -----------------------------
-# Funciones de tiempo por viaje
+# Funciones de tiempo por ruta
 # -----------------------------
 def tiempo_viaje_s(ruta_clientes, origen_es_estacion=True,
                    incluir_recoleccion=True,
                    estacion=estacion, deposito=deposito):
     """
-    Tiempo de un viaje, sin retorno final a estacion.
+    Tiempo de una ruta, sin retorno final a estacion.
     - Aproximación (origen->primer cliente) a 40 km/h
     - Entre clientes a 10 km/h
-    - Recoleccion por nodo: 60 s por parada cuando corresponde.
+    - Servicio por parada: T(w)=T_base+0.122w.
     - Último cliente -> depósito a 30 km/h
     """
     if not ruta_clientes:
@@ -740,15 +756,10 @@ def tiempo_viaje_s(ruta_clientes, origen_es_estacion=True,
     t_aprox = T(origen_nodo, primer, V_ESTACION_A_PRIMERO)
 
     # 2) Interno (10) + recolección
-    t_interno = 0.0
-    if incluir_recoleccion:
-        # Suma una parada por cada nodo visitado.
-        t_interno += TIEMPO_RECOLECCION_POR_NODO  # primer nodo
+    t_interno = tiempo_servicio_recoleccion_s(ruta_clientes) if incluir_recoleccion else 0.0
 
     for a, b in zip(ruta_clientes[:-1], ruta_clientes[1:]):
         t_interno += T(a, b, V_RECOLECCION)
-        if incluir_recoleccion:
-            t_interno += TIEMPO_RECOLECCION_POR_NODO
 
     # 3) Descarga (30)
     t_desc = T(ultimo, deposito, V_ULTIMO_A_DEPOSITO)
@@ -768,14 +779,14 @@ def tiempo_fin_turno_s(estacion=estacion, deposito=deposito):
     return T(deposito, estacion, V_DEPOSITO_A_EST)
 
 # -----------------------------
-# 5) Prueba rápida (solo viaje + retorno final aparte)
+# 5) Prueba rápida (solo ruta + retorno final aparte)
 # -----------------------------
 ruta_ejemplo = clientes[:5]
 t_viaje, det = tiempo_viaje_s(ruta_ejemplo, origen_es_estacion=True, incluir_recoleccion=True)
 
-print("\n--- PRUEBA VIAJE EJEMPLO (sin retorno final) ---")
+print("\n--- PRUEBA RUTA EJEMPLO (sin retorno final) ---")
 print("Clientes:", ruta_ejemplo)
-print(f"Tiempo viaje: {det['total_min']:.2f} min")
+print(f"Tiempo ruta: {det['total_min']:.2f} min")
 print("Detalle (min):")
 print(f"  Aprox (40):     {det['aprox_s']/60:.2f}")
 print(f"  Interno (10)+rec: {det['interno_s']/60:.2f}")
@@ -792,7 +803,7 @@ V_ESTACION_A_PRIMERO = VELOCIDAD_ACERCAMIENTO_KMH
 V_RECOLECCION        = VELOCIDAD_RECOLECCION_KMH
 V_ULTIMO_A_DEPOSITO  = VELOCIDAD_TRANSPORTE_KMH
 V_DEPOSITO_A_EST     = VELOCIDAD_RETORNO_KMH
-TIEMPO_RECOLECCION_POR_NODO = TIEMPO_PARADA_SEG  # s
+TIEMPO_RECOLECCION_POR_NODO = TIEMPO_PARADA_SEG  # T_base de T(w)=T_base+0.122w
 
 def tiempo_segundos(dist_m, vel_kmh):
     if dist_m is None or not np.isfinite(dist_m):
@@ -880,9 +891,9 @@ def tiempo_viaje_desde_dist_s(ruta_clientes, dist_matriz, idx, estacion_id, depo
                              origen_es_estacion=True,
                              incluir_recoleccion=True):
     """
-    Tiempo de un viaje, sin retorno final a estacion.
-      - Origen (estación si primer viaje, depósito si no) -> primer cliente: 40
-      - Entre clientes: 10 + 60s por parada (opcional)
+    Tiempo de una ruta, sin retorno final a estacion.
+      - Origen (estación si primera ruta, depósito si no) -> primer cliente: 40
+      - Entre clientes: 10 km/h + T(w)=T_base+0.122w por parada.
       - Último cliente -> depósito: 30
     """
     if not ruta_clientes:
@@ -894,14 +905,12 @@ def tiempo_viaje_desde_dist_s(ruta_clientes, dist_matriz, idx, estacion_id, depo
     origen = estacion_id if origen_es_estacion else deposito_id
     total += tiempo_segundos(D(dist_matriz, idx, origen, ruta_clientes[0]), V_ESTACION_A_PRIMERO)
 
-    # 2) Interno (10) + recolección
+    # 2) Interno (10) + servicio de recolección
     if incluir_recoleccion:
-        total += TIEMPO_RECOLECCION_POR_NODO  # primera parada
+        total += tiempo_servicio_recoleccion_s(ruta_clientes)
 
     for a, b in zip(ruta_clientes[:-1], ruta_clientes[1:]):
         total += tiempo_segundos(D(dist_matriz, idx, a, b), V_RECOLECCION)
-        if incluir_recoleccion:
-            total += TIEMPO_RECOLECCION_POR_NODO
 
     # 3) Descarga (30)
     total += tiempo_segundos(D(dist_matriz, idx, ruta_clientes[-1], deposito_id), V_ULTIMO_A_DEPOSITO)
@@ -922,7 +931,7 @@ V_ESTACION_A_PRIMERO = VELOCIDAD_ACERCAMIENTO_KMH
 V_RECOLECCION        = VELOCIDAD_RECOLECCION_KMH
 V_ULTIMO_A_DEPOSITO  = VELOCIDAD_TRANSPORTE_KMH
 V_DEPOSITO_A_EST     = VELOCIDAD_RETORNO_KMH
-TIEMPO_RECOLECCION_POR_NODO = TIEMPO_PARADA_SEG  # s
+TIEMPO_RECOLECCION_POR_NODO = TIEMPO_PARADA_SEG  # T_base de T(w)=T_base+0.122w
 
 def tiempo_segundos(dist_m, vel_kmh):
     if dist_m is None or not np.isfinite(dist_m):
@@ -1010,9 +1019,9 @@ def tiempo_viaje_desde_dist_s(ruta_clientes, dist_matriz, idx, estacion_id, depo
                              origen_es_estacion=True,
                              incluir_recoleccion=True):
     """
-    Tiempo de un viaje, sin retorno final a estacion.
-      - Origen (estación si primer viaje, depósito si no) -> primer cliente: 40
-      - Entre clientes: 10 + 60s por parada (opcional)
+    Tiempo de una ruta, sin retorno final a estacion.
+      - Origen (estación si primera ruta, depósito si no) -> primer cliente: 40
+      - Entre clientes: 10 km/h + T(w)=T_base+0.122w por parada.
       - Último cliente -> depósito: 30
     """
     if not ruta_clientes:
@@ -1024,14 +1033,12 @@ def tiempo_viaje_desde_dist_s(ruta_clientes, dist_matriz, idx, estacion_id, depo
     origen = estacion_id if origen_es_estacion else deposito_id
     total += tiempo_segundos(D(dist_matriz, idx, origen, ruta_clientes[0]), V_ESTACION_A_PRIMERO)
 
-    # 2) Interno (10) + recolección
+    # 2) Interno (10) + servicio de recolección
     if incluir_recoleccion:
-        total += TIEMPO_RECOLECCION_POR_NODO  # primera parada
+        total += tiempo_servicio_recoleccion_s(ruta_clientes)
 
     for a, b in zip(ruta_clientes[:-1], ruta_clientes[1:]):
         total += tiempo_segundos(D(dist_matriz, idx, a, b), V_RECOLECCION)
-        if incluir_recoleccion:
-            total += TIEMPO_RECOLECCION_POR_NODO
 
     # 3) Descarga (30)
     total += tiempo_segundos(D(dist_matriz, idx, ruta_clientes[-1], deposito_id), V_ULTIMO_A_DEPOSITO)
@@ -1065,6 +1072,8 @@ PARAMETROS_OPERATIVOS = {
     "horas_nomina_mensual": HORAS_NOMINA_MENSUAL,
     "precio_diesel_usd_gal": PRECIO_DIESEL_USD_GAL,
     "rendimiento_km_gal": RENDIMIENTO_KM_GAL,
+    "tiempo_base_parada_seg": TIEMPO_PARADA_SEG,
+    "factor_tiempo_peso_seg_kg": FACTOR_TIEMPO_PESO_SEG_KG,
     "horario_inicio": "06:00",
     "horario_fin": "24:00",
     "almuerzo_inicio": "13:00",
@@ -1623,7 +1632,7 @@ lista_viajes = lista_viajes_tiempo
 MIN_CARGA_VIAJE_KG = 0.60 * CAPACIDAD_MAXIMA_KG
 
 def fusionar_viajes_livianos(viajes, min_carga_kg, max_capacidad_kg, max_tiempo_s):
-    """Une viajes livianos cuando la fusion respeta capacidad y tiempo maximo."""
+    """Une rutas livianas cuando la fusion respeta capacidad y tiempo maximo."""
     viajes = [dict(v) for v in viajes]
     activo = [True] * len(viajes)
     cambio = True
@@ -1665,7 +1674,7 @@ def fusionar_viajes_livianos(viajes, min_carga_kg, max_capacidad_kg, max_tiempo_
                         carga=round(carga_total, 2),
                         zona=candidato_base.get("zona", viajes[i].get("zona", None)),
                         subzona=candidato_base.get("subzona", None),
-                        motivo="Viajes fusionados para balancear carga",
+                        motivo="Rutas fusionadas para balancear carga",
                     )
                     tiempo_est = float(combinado.get("tiempo_s", {}).get("si_sale_estacion", np.inf))
                     if not combinado.get("valido", True) or tiempo_est > max_tiempo_s:
@@ -1693,7 +1702,7 @@ def fusionar_viajes_livianos(viajes, min_carga_kg, max_capacidad_kg, max_tiempo_
     if livianos_finales:
         print(
             "Advertencia: "
-            f"{len(livianos_finales)} viajes quedan bajo {min_carga_kg/1000:.1f} t "
+            f"{len(livianos_finales)} rutas quedan bajo {min_carga_kg/1000:.1f} t "
             "porque no se pudieron fusionar sin exceder capacidad o 8h."
         )
     return fusionados
@@ -1707,20 +1716,20 @@ lista_viajes = fusionar_viajes_livianos(
 
 sobrecargados = [v for v in lista_viajes if float(v.get("carga", 0.0)) > CAPACIDAD_MAXIMA_KG + 0.01]
 if sobrecargados:
-    raise ValueError(f"Hay {len(sobrecargados)} viajes sobre la capacidad maxima de {CAPACIDAD_MAXIMA_KG:.0f} kg.")
+    raise ValueError(f"Hay {len(sobrecargados)} rutas sobre la capacidad maxima de {CAPACIDAD_MAXIMA_KG:.0f} kg.")
 
 excedidos_tiempo = [
     v for v in lista_viajes
     if float(v.get("tiempo_s", {}).get("si_sale_estacion", 0.0)) > MAX_TIEMPO_SERVICIO_S + 1.0
 ]
 if excedidos_tiempo:
-    print(f"Advertencia: {len(excedidos_tiempo)} viajes individuales exceden 8h aun tras dividir; revisar conectividad/zona.")
+    print(f"Advertencia: {len(excedidos_tiempo)} rutas individuales exceden 8h aun tras dividir; revisar conectividad/zona.")
 
-print(f"Viajes Clarke & Wright generados: {len(lista_viajes)}")
-print(f"Viajes válidos para asignación: {sum(1 for v in lista_viajes if v.get('valido'))}")
+print(f"Rutas Clarke & Wright generadas: {len(lista_viajes)}")
+print(f"Rutas válidas para asignación: {sum(1 for v in lista_viajes if v.get('valido'))}")
 
 
-# Asignacion de viajes a camiones
+# Asignacion de rutas a camiones
 import numpy as np
 
 HORAS_TRABAJO = HORAS_TRABAJO_H * 3600  # segundos
@@ -1781,7 +1790,7 @@ def construir_viaje_asignado(fuente, origen_nodo):
         return None
 
     d_recol_m = distancia_interna_camino_m(camino)
-    t_recol_s = tiempo_segundos(d_recol_m, V_RECOLECCION) + len(camino) * TIEMPO_RECOLECCION_POR_NODO
+    t_recol_s = tiempo_segundos(d_recol_m, V_RECOLECCION) + tiempo_servicio_recoleccion_s(camino)
 
     d_aprox = D(origen_nodo, primer)
     d_desc = D(ultimo, id_relleno)
@@ -1894,10 +1903,10 @@ for fuente in viajes_pendientes:
         )
     viaje_nuevo = construir_viaje_asignado(fuente, id_estacion)
     if viaje_nuevo is None:
-        print("Viaje no enrutable; se omite una zona.")
+        print("Ruta no enrutable; se omite una zona.")
         continue
     if viaje_nuevo["tiempo_productivo_s"] > HORAS_TRABAJO:
-        print(f"Viaje {camion_id} excede 8h ({viaje_nuevo['tiempo_productivo_s']/3600.0:.2f}h). Se mantiene para no perder cobertura.")
+        print(f"Ruta {camion_id} excede 8h ({viaje_nuevo['tiempo_productivo_s']/3600.0:.2f}h). Se mantiene para no perder cobertura.")
     camiones_tmp.append(construir_camion_desde_viajes(camion_id, [viaje_nuevo]))
     camion_id += 1
 
@@ -1911,20 +1920,20 @@ for camion in camiones:
             servicios_sobrecargados.append((camion.get("id"), i_viaje, carga_viaje))
 if servicios_sobrecargados:
     raise ValueError(
-        "Viajes sobre capacidad maxima de "
+        "Rutas sobre capacidad maxima de "
         f"{CAPACIDAD_MAXIMA_KG:.0f} kg: {servicios_sobrecargados}"
     )
 
 for c in camiones:
     carga = sum(float(v.get("carga", 0.0)) for v in c["viajes"])
     print(f"\n--- Camion {c['vehiculo_id']} ---")
-    print("Flujo por viaje: Estacion/Relleno -> Recoleccion -> Relleno")
-    print(f"Viajes: {len(c['viajes'])} | Carga jornada: {carga:.2f} kg | Tiempo productivo: {c.get('tiempo_productivo_h', c['tiempo_total_h']):.2f} h")
+    print("Flujo por ruta: Estacion/Relleno -> Recoleccion -> Relleno")
+    print(f"Rutas: {len(c['viajes'])} | Carga jornada: {carga:.2f} kg | Tiempo productivo: {c.get('tiempo_productivo_h', c['tiempo_total_h']):.2f} h")
 
 vehiculos_fisicos = len(set(c['vehiculo_id'] for c in camiones))
 if vehiculos_fisicos > NUM_VEHICULOS:
     raise ValueError(f"Se requieren {vehiculos_fisicos} camiones y el maximo disponible es {NUM_VEHICULOS}.")
-print(f"\nRESUMEN FINAL: {sum(len(c.get('viajes', [])) for c in camiones)} viajes, {vehiculos_fisicos} camiones usados de {NUM_VEHICULOS} disponibles.")
+print(f"\nRESUMEN FINAL: {sum(len(c.get('viajes', [])) for c in camiones)} rutas, {vehiculos_fisicos} camiones usados de {NUM_VEHICULOS} disponibles.")
 
 # Calculo de densidad poblacional por nodo
 import geopandas as gpd
@@ -2321,7 +2330,7 @@ print("  -> Guardado: base_puntos_clave.gpkg")
 # =========================================================
 # 2) TRAMOS POR CAMIÓN (1 archivo GPKG por camión)
 # =========================================================
-print("\n2) Generando tramos por camión/viaje (un GPKG por camión)...")
+print("\n2) Generando tramos por camión/ruta (un GPKG por camión)...")
 
 for camion in camiones:
     c_id = camion["id"]
@@ -2374,7 +2383,7 @@ for camion in camiones:
         primer = nodos_ruta[0]
         ultimo = nodos_ruta[-1]
 
-        # Origen operativo del viaje
+        # Origen operativo de la ruta
         if viaje["origen"] == "Estación":
             origen_nodo = id_estacion
             de_aprox = "Estación"
@@ -2479,7 +2488,7 @@ for camion in camiones:
         gdf_tramos.to_file(out_gpkg, layer="tramos", driver="GPKG")
         print(f"  Camion {c_id}: Guardado {out_gpkg} (layer='tramos', {len(gdf_tramos)} tramos)")
     else:
-        print(f"  Aviso Camion {c_id}: No se generaron tramos (features vacío). Revisa viajes.")
+        print(f"  Aviso Camion {c_id}: No se generaron tramos (features vacío). Revisa rutas.")
 
 print("\nPROCESO TERMINADO. Archivos generados:")
 print("  - base_calles.gpkg")
@@ -3261,7 +3270,7 @@ html = """<!DOCTYPE html>
             <input id="speedPremium" type="range" min="0.25" max="6" step="0.25" value="1.5">
             <span id="speedValPremium" class="small">1.5x</span>
           </div>
-          <p class="small explain"><b>Play superior:</b> anima la jornada completa. <b>Animar en un viaje:</b> reproduce solo ese viaje del camion seleccionado.</p>
+          <p class="small explain"><b>Play superior:</b> anima la jornada completa. <b>Animar una ruta:</b> reproduce solo esa ruta del camion seleccionado.</p>
         </div>
       </details>
 
@@ -3282,9 +3291,9 @@ html = """<!DOCTYPE html>
             <div class="legend-item"><span class="legend-line" style="color:#cfd6df"></span><span class="small"><b>Ruta planificada:</b> recorrido completo antes de presionar Play.</span></div>
             <div class="legend-item"><span class="legend-line" style="color:#0f766e"></span><span class="small"><b>Ruta recorrida:</b> tramo que se va pintando durante la animacion.</span></div>
             <div class="legend-item"><span class="legend-mark" style="color:#f97316"></span><span class="small"><b>Clientes:</b> puntos de recoleccion regular. Mercados, centros comerciales y otros grandes generadores quedan excluidos.</span></div>
-            <div class="legend-item"><span class="legend-line legend-dash" style="color:#2563eb"></span><span class="small"><b>Sectores y viajes:</b> areas iniciales y viajes individuales que se pueden activar desde capas.</span></div>
+            <div class="legend-item"><span class="legend-line legend-dash" style="color:#2563eb"></span><span class="small"><b>Sectores y rutas:</b> areas iniciales y rutas individuales que se pueden activar desde capas.</span></div>
           </div>
-          <p class="small explain"><b>Codigo 2.3:</b> Camion 2, Viaje 3. Cada viaje sale desde estacion o relleno, recoge clientes y descarga en el relleno sanitario.</p>
+          <p class="small explain"><b>Codigo 2.3:</b> Camion 2, ruta 3. Cada ruta sale desde estacion o relleno, recoge clientes y descarga en el relleno sanitario.</p>
         </div>
       </details>
 
@@ -3292,7 +3301,7 @@ html = """<!DOCTYPE html>
         <summary>Como interpretar</summary>
         <div class="section-content">
           <div class="insight-list">
-            <div class="insight small"><b>Viajes</b> Cantidad de recorridos operativos. Un camion puede tener mas de un viaje.</div>
+            <div class="insight small"><b>Rutas</b> Cantidad de recorridos operativos. Un camion puede tener mas de una ruta.</div>
             <div class="insight small"><b>Camiones</b> Muestra usados / disponibles. Si se acerca al maximo, la flota esta ajustada.</div>
             <div class="insight small"><b>Eficiencia</b> Toneladas recolectadas por kilometro. Mientras mas alto, mejor aprovechamiento del recorrido.</div>
             <div class="insight small"><b>Jornada</b> Tiempo total acumulado de la flota, no la duracion de un solo camion.</div>
@@ -3325,7 +3334,7 @@ html = """<!DOCTYPE html>
       </details>
 
       <details class="section" open>
-        <summary>Viajes por camion</summary>
+        <summary>Rutas por camion</summary>
         <div class="section-content">
           <div id="tripCardsPremium"></div>
         </div>
@@ -3559,7 +3568,7 @@ html = """<!DOCTYPE html>
     const globalBox = document.getElementById("globalMetricsPremium");
     if (globalBox) {
       globalBox.innerHTML = [
-        metric("Viajes", fmt0.format(global.viajes_asignados || 0)),
+        metric("Rutas", fmt0.format(global.viajes_asignados || 0)),
         metric("Camiones", `${fmt0.format(global.camiones_usados || 0)} / ${fmt0.format(global.camiones_maximos || 0)}`),
         metric("Carga", `${fmt.format(cargaTotalTon)} t`),
         metric("Distancia", `${fmt.format(distanciaTotalKm)} km`),
@@ -3578,9 +3587,9 @@ html = """<!DOCTYPE html>
       const promedioViajes = camionesUsados > 0 ? viajes / camionesUsados : 0;
       const usoFlota = camionesMax > 0 ? (camionesUsados / camionesMax) * 100 : 0;
       summary.innerHTML = [
-        `<div class="insight small"><b>Cobertura del escenario</b> Se asignaron ${fmt0.format(viajes)} viajes para cubrir ${fmt.format(cargaTotalTon)} toneladas de basura.</div>`,
+        `<div class="insight small"><b>Cobertura del escenario</b> Se asignaron ${fmt0.format(viajes)} rutas para cubrir ${fmt.format(cargaTotalTon)} toneladas de basura.</div>`,
         `<div class="insight small"><b>Uso de flota</b> Se usan ${fmt0.format(camionesUsados)} de ${fmt0.format(camionesMax)} camiones disponibles (${fmt.format(usoFlota)}%).</div>`,
-        `<div class="insight small"><b>Trabajo por camion</b> Cada camion realiza en promedio ${fmt.format(promedioViajes)} viaje(s).</div>`,
+        `<div class="insight small"><b>Trabajo por camion</b> Cada camion realiza en promedio ${fmt.format(promedioViajes)} ruta(s).</div>`,
         `<div class="insight small"><b>Lectura economica</b> El costo operativo estimado es $${fmt.format(costoOperativo)}, incluyendo diesel y costo laboral proporcional.</div>`
       ].join("");
     }
@@ -3600,22 +3609,22 @@ html = """<!DOCTYPE html>
           <article class="truck-card" id="truckCard-${c.id}" style="color:${color}">
             <div class="truck-top">
               <div class="truck-name"><span class="swatch" style="background:${color}"></span>Camion ${c.vehiculo || c.id}</div>
-              <span class="pill">${fmt0.format(c.viajes || 0)} viajes</span>
+              <span class="pill">${fmt0.format(c.viajes || 0)} rutas</span>
             </div>
             <div class="small" style="margin:-4px 0 8px;">${c.operacion || "Estacion -> Recoleccion -> Relleno"}</div>
             <div class="stat-line">
               <div><b>${formatHours(c.tiempo_h || 0)}</b><span>jornada</span></div>
-              <div><b>${fmt0.format(c.viajes || 0)}</b><span>viajes</span></div>
+              <div><b>${fmt0.format(c.viajes || 0)}</b><span>rutas</span></div>
               <div><b>${fmt.format(c.distancia_km || 0)}</b><span>km</span></div>
             </div>
             <div class="progress" style="--p:${cargaPct}%"><i></i></div>
             <div class="mini-grid">
               <div class="mini-stat"><b>${fmt.format(cargaTotal)} t</b><span>carga total</span></div>
-              <div class="mini-stat"><b>${fmt.format(cargaProm)} t</b><span>promedio/viaje</span></div>
-              <div class="mini-stat"><b>${fmt.format(cargaMaxViaje)} / ${fmt.format(capacidad)} t</b><span>mayor viaje</span></div>
+              <div class="mini-stat"><b>${fmt.format(cargaProm)} t</b><span>promedio/ruta</span></div>
+              <div class="mini-stat"><b>${fmt.format(cargaMaxViaje)} / ${fmt.format(capacidad)} t</b><span>ruta mas cargada</span></div>
               <div class="mini-stat"><b>${fmt.format(usoJornada)}%</b><span>uso jornada</span></div>
             </div>
-            <div class="small explain">La barra muestra que tan cargado estuvo el viaje mas pesado de este camion frente a su capacidad maxima.</div>
+            <div class="small explain">La barra muestra la carga de la ruta mas cargada de este camion frente a su capacidad maxima.</div>
           </article>
         `;
       }).join("");
@@ -3631,7 +3640,7 @@ html = """<!DOCTYPE html>
         return `
           <article class="trip-card" data-camion="${c}" data-viaje="${v.viaje}">
             <div class="trip-card-head">
-              <div class="trip-title"><span class="swatch" style="background:${color}"></span>Camion ${v.camion} - Viaje ${v.viaje}</div>
+              <div class="trip-title"><span class="swatch" style="background:${color}"></span>Camion ${v.camion} - Ruta ${v.viaje}</div>
               <button class="btn mini secondary" data-trip-key="${c}-${v.viaje}">Animar</button>
             </div>
             <span class="pill">${fmt.format(cargaTon(v))} / ${fmt.format(capacidadTon(v))} t</span>
@@ -3689,7 +3698,7 @@ html = """<!DOCTYPE html>
     const poly = polylineFromRuta(item.coords, color, { weight: 3, opacity: 0.55, dashArray: "3 7" });
     if (poly) {
       tripLayers[key] = poly;
-      overlays[`Camion ${item.camion} - Viaje ${item.viaje}`] = poly;
+      overlays[`Camion ${item.camion} - Ruta ${item.viaje}`] = poly;
     }
   });
 
@@ -3965,6 +3974,99 @@ with open(OUT_HTML, "w", encoding="utf-8") as f:
 print(f"HTML generado: {OUT_HTML}")
 print("   Archivo listo para abrir en el navegador.")
 
+# Exportacion JSON operativa para entrega externa.
+# Se usan nombres publicos de "rutas", aunque algunas claves internas del
+# algoritmo conserven "viajes" para compatibilidad con el flujo existente.
+json_rutas = []
+for ruta in metricas_html["viajes"]:
+    camion_id = int(ruta.get("camion", 0))
+    ruta_id = int(ruta.get("viaje", 0))
+    ruta_key = f"{camion_id}-{ruta_id}"
+    ruta_json = {
+        "id": ruta_key,
+        "camion": camion_id,
+        "vehiculo": int(ruta.get("vehiculo", camion_id)),
+        "ruta": ruta_id,
+        "origen": ruta.get("origen", "N/A"),
+        "descarga": ruta.get("descarga", ""),
+        "carga_kg": ruta.get("carga_kg", 0.0),
+        "capacidad_kg": ruta.get("capacidad_kg", CAPACIDAD_MAXIMA_KG),
+        "distancia_km": {
+            "aproximacion": ruta.get("aprox_km", 0.0),
+            "recoleccion": ruta.get("recoleccion_km", 0.0),
+            "descarga": ruta.get("descarga_km", 0.0),
+            "cierre": ruta.get("cierre_km", 0.0),
+            "total": (
+                float(ruta.get("aprox_km", 0.0))
+                + float(ruta.get("recoleccion_km", 0.0))
+                + float(ruta.get("descarga_km", 0.0))
+                + float(ruta.get("cierre_km", 0.0))
+            ),
+        },
+        "tiempo_min": {
+            "aproximacion": ruta.get("aprox_min", 0.0),
+            "recoleccion": ruta.get("recoleccion_min", 0.0),
+            "espera_desalojo": ruta.get("espera_desalojo_min", 0.0),
+            "descarga": ruta.get("descarga_min", 0.0),
+            "cierre": ruta.get("cierre_min", 0.0),
+            "balance_turno": ruta.get("balance_turno_min", 0.0),
+            "total": (
+                float(ruta.get("aprox_min", 0.0))
+                + float(ruta.get("recoleccion_min", 0.0))
+                + float(ruta.get("espera_desalojo_min", 0.0))
+                + float(ruta.get("descarga_min", 0.0))
+                + float(ruta.get("cierre_min", 0.0))
+                + float(ruta.get("balance_turno_min", 0.0))
+            ),
+        },
+        "ventana_desalojo": ruta.get("ventana_desalojo", "N/A"),
+        "coordenadas": rutas_viajes.get(ruta_key, {}).get("coords", []),
+    }
+    json_rutas.append(ruta_json)
+
+json_camiones = []
+for camion in metricas_html["camiones"]:
+    camion_id = int(camion.get("id", 0))
+    camion_json = dict(camion)
+    camion_json["rutas"] = [r for r in json_rutas if int(r["camion"]) == camion_id]
+    camion_json["coordenadas_ruta_completa"] = rutas_camiones.get(camion_id, [])
+    json_camiones.append(camion_json)
+
+json_operativo = {
+    "metadata": {
+        "tipo": "rutas_recoleccion_residuos",
+        "escenario_toneladas": float(ESCENARIO_COMPACTADO_TON),
+        "html_origen": OUT_HTML,
+        "sistema_coordenadas": "EPSG:4326",
+        "formato_coordenadas": "[latitud, longitud]",
+        "nota": "Las claves publicas usan rutas; algunas metricas internas pueden conservar el nombre viajes por compatibilidad.",
+    },
+    "parametros": {
+        "capacidad_camion_kg": float(CAPACIDAD_MAXIMA_KG),
+        "camiones_maximos": int(NUM_VEHICULOS),
+        "horas_trabajo": float(HORAS_TRABAJO_H),
+        "recolectores_por_camion": int(NUMERO_RECOLECTORES_CAMION),
+        "choferes_por_camion": int(NUMERO_CHOFER_CAMION),
+        "precio_diesel_usd_gal": float(PRECIO_DIESEL_USD_GAL),
+        "rendimiento_km_gal": float(RENDIMIENTO_KM_GAL),
+        "tiempo_base_parada_seg": float(TIEMPO_PARADA_SEG),
+        "factor_tiempo_peso_seg_kg": float(FACTOR_TIEMPO_PESO_SEG_KG),
+        "formula_tiempo_parada": "T(w)=T_base+0.122w",
+    },
+    "metricas": metricas_html["global"],
+    "camiones": json_camiones,
+    "rutas": json_rutas,
+    "puntos_clave": clave_geojson,
+    "clientes": clientes_geojson,
+    "sectores": sectores_geojson,
+}
+
+OUT_JSON = Path(OUT_HTML).with_suffix(".json")
+with open(OUT_JSON, "w", encoding="utf-8") as f:
+    json.dump(json_operativo, f, ensure_ascii=False, indent=2)
+
+print(f"JSON operativo generado: {OUT_JSON}")
+
 # Calculo y exportacion de KPIs operativos
 import pandas as pd
 import numpy as np
@@ -4015,7 +4117,7 @@ total_demanda = float(df_nodos["demanda_kg"].sum())
 gini_demanda = gini_coefficient(df_nodos["demanda_kg"].values)
 
 # =========================================================
-# Desglose por viaje desde la asignacion de camiones
+# Desglose por ruta desde la asignacion de camiones
 # =========================================================
 filas_viajes = []
 for c in camiones:
@@ -4162,7 +4264,7 @@ print("KPI GLOBAL")
 print("======================")
 print(f"Camiones usados: {n_camiones}")
 print(f"Rutas asignadas: {n_servicios}")
-print(f"Viajes asignados: {n_viajes}")
+print(f"Rutas asignadas: {n_viajes}")
 print(f"Nodos clientes: {len(nodos_clientes)}")
 print(f"Demanda total (kg): {total_demanda:,.2f}")
 print(f"Carga total asignada (kg): {carga_total_asignada:,.2f}")
@@ -4187,14 +4289,14 @@ display(
 )
 
 print("\n======================")
-print("KPI POR VIAJE (top 20 mas largos por tiempo)")
+print("KPI POR RUTA (top 20 mas largos por tiempo)")
 print("======================")
 if len(df_viajes) > 0:
     display(
         df_viajes.sort_values("t_total_min", ascending=False).head(20).round(2)
     )
 else:
-    print("No hay viajes en df_viajes.")
+    print("No hay rutas en df_viajes.")
 
 print("\n======================")
 print("Hotspots por basura (top 15 nodos)")
