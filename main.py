@@ -1,4 +1,32 @@
 ﻿# Carga de red vial, clientes y puntos operativos
+"""
+Optimizacion de rutas de recoleccion de residuos solidos en Cuenca.
+
+Este archivo concentra el flujo completo del proyecto:
+1. Carga el grafo vial y los clientes compactados.
+2. Escala la demanda al escenario solicitado: 60 t, 120 t u otro valor.
+3. Construye una matriz origen-destino sobre la red vial real.
+4. Aplica zonificacion, Clarke & Wright Savings y mejora local 2-opt.
+5. Divide y asigna rutas a camiones respetando capacidad y jornada.
+6. Exporta capas geograficas, KPI, mapa HTML interactivo y JSON operativo.
+
+Convenciones:
+- En el informe y salidas finales se usa el termino "ruta".
+- Algunas variables internas aun dicen "viaje" por compatibilidad historica;
+  deben leerse como rutas operativas.
+- Una ruta operativa es: estacion/relleno -> recoleccion -> relleno.
+- El tiempo de servicio por parada compactada usa:
+  T(w) = 10 + 0.122*w segundos, donde w es la carga del nodo en kg.
+
+Ejemplos:
+    python main.py --escenario 60t --tiempo-parada-seg 10
+    python main.py --escenario 120t --tiempo-parada-seg 10
+"""
+
+# =============================================================================
+# 1. Imports y parametros globales
+# =============================================================================
+
 import osmnx as ox
 import networkx as nx
 import numpy as np
@@ -10,6 +38,8 @@ from shapely.validation import explain_validity
 from pyproj import CRS
 from pathlib import Path
 
+# Parametros operativos por defecto. La mayoria puede cambiarse por consola
+# con los argumentos definidos en cargar_parametros_usuario().
 CAPACIDAD_MAXIMA_CAMION_KG = 12000.0
 NUM_VEHICULOS_MAX = 10
 HORAS_TRABAJO_MIN_H = 6.5
@@ -20,6 +50,7 @@ SUELDO_RECOLECTORES_USD = 665.0
 SUELDO_CHOFER_USD = 801.0
 HORAS_NOMINA_MENSUAL = 160.0
 TIEMPO_PARADA_SEG = 10.0
+# Factor derivado de 2.44 s para 20 kg: 2.44 / 20 = 0.122 s/kg.
 FACTOR_TIEMPO_PESO_SEG_KG = 0.122
 VELOCIDAD_ACERCAMIENTO_KMH = 50.0
 VELOCIDAD_RECOLECCION_KMH = 10.0
@@ -51,6 +82,7 @@ PESOS_BASURA_POR_TIPO_NODO = {
     "otros": 1.0,
 }
 
+# Valores usados por defecto cuando no se pasan argumentos por consola.
 PARAMETROS_FALLBACK = {
     "toneladas": TOTAL_PESO_PESADO_TON,
     "capacidad_camion_kg": CAPACIDAD_MAXIMA_CAMION_KG,
@@ -83,6 +115,10 @@ def _parse_bool(value):
         return False
     raise argparse.ArgumentTypeError("Usa si/no, true/false o 1/0.")
 
+
+# =============================================================================
+# 2. Parametros de ejecucion por consola
+# =============================================================================
 
 def cargar_parametros_usuario():
     """
@@ -266,6 +302,10 @@ try:
 except Exception:
     pass
 
+# =============================================================================
+# 3. Carga de red vial, clientes y puntos operativos
+# =============================================================================
+
 print("1) Cargando grafo...")
 G = ox.load_graphml("grafo_actualizado.graphml")
 G_RUTEO = G
@@ -390,6 +430,13 @@ if len(dict_demandas) > 0:
     print(f"   -> Demanda Total (si aplica): {sum(dict_demandas.values()):.2f} kg")
 else:
     print("   -> Demanda: se definira en la etapa de POIs y distribucion base.")
+
+# =============================================================================
+# 4. Calculo de demanda por nodo
+# =============================================================================
+#
+# Si existen clientes compactados, se usan como fuente oficial de paradas
+# operativas. Si no existen, el script puede aproximar clientes desde OSM/POIs.
 
 # Calculo de POIs y demandas
 import pandas as pd
@@ -651,6 +698,14 @@ if nodos_grandes_excluidos:
         f"({carga_excluida:.2f} kg, umbral {UMBRAL_NODO_GRANDE_KG:.0f} kg)"
     )
 
+# =============================================================================
+# 5. Matriz origen-destino y funciones de tiempo
+# =============================================================================
+#
+# La matriz OD guarda distancias minimas por calles entre estacion, relleno y
+# clientes compactados. Sobre esa matriz se calcula el tiempo segun velocidad
+# por etapa y servicio en cada parada compactada.
+
 # Matriz origen-destino de distancias y tiempos por tramo
 import numpy as np
 import networkx as nx
@@ -670,6 +725,11 @@ def tiempo_servicio_recoleccion_s(ruta_clientes, dict_demanda=None):
     """
     Tiempo de servicio en paradas compactadas.
     Aplica T(w) = T_base + f*w, con T_base configurable y f=0.122 s/kg.
+
+    ruta_clientes:
+        Lista de nodos atendidos por una ruta.
+    dict_demanda:
+        Demanda por nodo en kg. Si se omite, usa dict_demandas global.
     """
     if not ruta_clientes:
         return 0.0
@@ -794,6 +854,14 @@ print(f"  Descarga (30):  {det['descarga_s']/60:.2f}")
 
 t_fin = tiempo_fin_turno_s()
 print(f"\nRetorno final (Depósito->Estación, 40): {t_fin/60:.2f} min")
+
+# =============================================================================
+# 6. Optimizacion de rutas
+# =============================================================================
+#
+# El bloque mantiene algunas funciones repetidas del desarrollo original para
+# conservar compatibilidad con el flujo validado. La salida publica siempre usa
+# "rutas"; variables internas llamadas "viajes" representan esas mismas rutas.
 
 # Optimizacion Clarke & Wright con distancias viales
 import numpy as np
@@ -1729,6 +1797,14 @@ print(f"Rutas Clarke & Wright generadas: {len(lista_viajes)}")
 print(f"Rutas válidas para asignación: {sum(1 for v in lista_viajes if v.get('valido'))}")
 
 
+# =============================================================================
+# 7. Asignacion de rutas a camiones
+# =============================================================================
+#
+# Las rutas generadas se ordenan y asignan a camiones. Un camion puede ejecutar
+# varias rutas: despues de descargar en el relleno, puede iniciar otra ruta desde
+# el mismo relleno. Por eso una ruta puede aparecer con origen "Relleno".
+
 # Asignacion de rutas a camiones
 import numpy as np
 
@@ -1780,6 +1856,15 @@ def distancia_interna_camino_m(camino):
     return total
 
 def construir_viaje_asignado(fuente, origen_nodo):
+    """
+    Construye la representacion operativa de una ruta asignable a un camion.
+
+    Incluye:
+    - tramo de aproximacion desde estacion o relleno,
+    - tramo interno de recoleccion,
+    - tramo de descarga final hacia el relleno,
+    - tiempo de servicio T(w)=10+0.122w para cada parada compactada.
+    """
     camino = list(fuente.get("camino", []))
     if not camino:
         return None
@@ -1934,6 +2019,10 @@ vehiculos_fisicos = len(set(c['vehiculo_id'] for c in camiones))
 if vehiculos_fisicos > NUM_VEHICULOS:
     raise ValueError(f"Se requieren {vehiculos_fisicos} camiones y el maximo disponible es {NUM_VEHICULOS}.")
 print(f"\nRESUMEN FINAL: {sum(len(c.get('viajes', [])) for c in camiones)} rutas, {vehiculos_fisicos} camiones usados de {NUM_VEHICULOS} disponibles.")
+
+# =============================================================================
+# 8. Enriquecimiento georreferenciado y exportacion a QGIS
+# =============================================================================
 
 # Calculo de densidad poblacional por nodo
 import geopandas as gpd
@@ -2496,6 +2585,14 @@ print("  - base_clientes.gpkg  (incluye demanda_kg + densidad_pob_km2 + pob_buff
 print("  - base_puntos_clave.gpkg")
 print("  - rutas_tramos_Camion_X.gpkg (uno por camión)")
 
+# =============================================================================
+# 9. Bitacora macro por tramos
+# =============================================================================
+#
+# La bitacora resume cada ruta en tres macro-tramos:
+# Aproximacion, Recoleccion y Descarga. Sirve para auditar distancia, tiempo,
+# carga y paradas atendidas por camion/ruta.
+
 # Bitacora macro por tramos y exportacion CSV
 import pandas as pd
 import numpy as np
@@ -2801,6 +2898,10 @@ df_comparacion_operativa.to_csv("comparacion_operativa.csv", index=False, encodi
 
 print("\n=== COMPARACION OPERATIVA VS BASE BRYAN ===")
 display(df_comparacion_operativa.round(2))
+
+# =============================================================================
+# 10. Visualizacion HTML interactiva y JSON operativo
+# =============================================================================
 
 # Visualizacion HTML interactiva con Leaflet
 import geopandas as gpd
@@ -4066,6 +4167,10 @@ with open(OUT_JSON, "w", encoding="utf-8") as f:
     json.dump(json_operativo, f, ensure_ascii=False, indent=2)
 
 print(f"JSON operativo generado: {OUT_JSON}")
+
+# =============================================================================
+# 11. KPI finales
+# =============================================================================
 
 # Calculo y exportacion de KPIs operativos
 import pandas as pd
